@@ -11,10 +11,18 @@ final class APIClient: ObservableObject {
     private func request<T: Decodable>(_ path: String,
                                        method: String = "GET",
                                        body: Encodable? = nil,
+                                       queryItems: [URLQueryItem]? = nil,
                                        decode: T.Type) async throws -> T {
         guard let token = auth?.accessToken else { throw URLError(.userAuthenticationRequired) }
         var url = AppConfig.backendBaseURL
         url.append(path: path)
+
+        if let queryItems {
+            if var comps = URLComponents(url: url, resolvingAgainstBaseURL: true) {
+                comps.queryItems = queryItems
+                if let u = comps.url { url = u }
+            }
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -44,14 +52,11 @@ final class APIClient: ObservableObject {
 
     // MARK: Tasks
     func listTasks(goalId: String? = nil) async throws -> [TaskItem] {
-        let path: String
-        if let gid = goalId, !gid.isEmpty {
-            // URL-encode if needed (ids expected to be simple strings)
-            path = "/tasks?goal_id=\(gid)"
-        } else {
-            path = "/tasks"
-        }
-        return try await request(path, decode: [TaskItem].self)
+        let qItems: [URLQueryItem]? = {
+            if let gid = goalId, !gid.isEmpty { return [URLQueryItem(name: "goal_id", value: gid)] }
+            return nil
+        }()
+        return try await request("/tasks", queryItems: qItems, decode: [TaskItem].self)
     }
 
     // Backwards-compat convenience

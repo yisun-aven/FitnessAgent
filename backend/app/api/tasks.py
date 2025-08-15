@@ -31,19 +31,28 @@ def _sb_headers(user_token: str) -> dict:
 
 
 @router.get("", response_model=List[Task])
-async def list_tasks(user_obj = Depends(get_current_user), authorization: str | None = Header(default=None)):
+async def list_tasks(
+    goal_id: str | None = None,
+    user_obj = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+):
     uid = _user_id(user_obj)
     print(f"[tasks.list] uid={uid}")  # TEMP: debug which user's tasks are fetched
 
     # Fallback to in-memory if Supabase not configured
     if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
-        return _IN_MEMORY_TASKS.get(uid, [])
+        data = _IN_MEMORY_TASKS.get(uid, [])
+        if goal_id:
+            data = [t for t in data if t.goal_id == goal_id]
+        return data
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1]
 
     url = f"{_SUPABASE_URL}/rest/v1/tasks?select=*&user_id=eq.{uid}&order=created_at.desc"
+    if goal_id:
+        url += f"&goal_id=eq.{goal_id}"
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers=_sb_headers(token))
     if resp.status_code != 200:
@@ -53,7 +62,12 @@ async def list_tasks(user_obj = Depends(get_current_user), authorization: str | 
 
 
 @router.post("/generate", response_model=GenerateTasksResponse)
-async def generate_tasks(req: GenerateTasksRequest, user_obj = Depends(get_current_user), authorization: str | None = Header(default=None)):
+async def generate_tasks(
+    req: GenerateTasksRequest,
+    goal_id: str | None = None,
+    user_obj = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+):
     uid = _user_id(user_obj)
     tasks_create = generate_tasks_from_goal(req.goal)
 
@@ -65,7 +79,8 @@ async def generate_tasks(req: GenerateTasksRequest, user_obj = Depends(get_curre
         payload = [
             {
                 "user_id": uid,
-                "goal_id": tc.goal_id,  # may be None
+                # Prefer explicit goal_id from query param; fall back to each task's goal_id if present.
+                "goal_id": goal_id or getattr(tc, "goal_id", None),
                 "title": tc.title,
                 "description": tc.description,
                 "due_at": tc.due_at.isoformat() if tc.due_at else None,
