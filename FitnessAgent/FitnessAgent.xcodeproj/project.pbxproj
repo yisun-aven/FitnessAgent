@@ -33,9 +33,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		342D4EF62E4D3180001BB604 /* FitnessAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = FitnessAgent.app; path = "/Users/Aven/Desktop/FitnessAgent/FitnessAgent/build/Debug-iphoneos/FitnessAgent.app"; sourceTree = "<absolute>"; };
-		342D4F032E4D3181001BB604 /* FitnessAgentTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = FitnessAgentTests.xctest; path = "/Users/Aven/Desktop/FitnessAgent/FitnessAgent/build/Debug-iphoneos/FitnessAgent.app/PlugIns/FitnessAgentTests.xctest"; sourceTree = "<absolute>"; };
-		342D4F0D2E4D3181001BB604 /* FitnessAgentUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = FitnessAgentUITests.xctest; path = "/Users/Aven/Desktop/FitnessAgent/FitnessAgent/build/Debug-iphoneos/FitnessAgentUITests-Runner.app/PlugIns/FitnessAgentUITests.xctest"; sourceTree = "<absolute>"; };
+		34FF5D252E4E9E4500683C6A /* FitnessAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitnessAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		34FF5D262E4E9E4500683C6A /* FitnessAgentTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAgentTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		34FF5D272E4E9E4500683C6A /* FitnessAgentUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -72,6 +72,16 @@
 		342D4F432E4D3DF6001BB604 /* Models */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Models;
+			sourceTree = "<group>";
+		};
+		3499BE3F2E4EDAAB00552617 /* Design */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Design;
+			sourceTree = "<group>";
+		};
+		3499BE422E4EDAE000552617 /* Components */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Components;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -117,6 +127,11 @@
 				342D4F3A2E4D3DE6001BB604 /* Features */,
 				342D4F3F2E4D3DF1001BB604 /* Services */,
 				342D4F432E4D3DF6001BB604 /* Models */,
+				34FF5D252E4E9E4500683C6A /* FitnessAgent.app */,
+				34FF5D262E4E9E4500683C6A /* FitnessAgentTests.xctest */,
+				34FF5D272E4E9E4500683C6A /* FitnessAgentUITests.xctest */,
+				3499BE3F2E4EDAAB00552617 /* Design */,
+				3499BE422E4EDAE000552617 /* Components */,
 			);
 			sourceTree = "<group>";
 		};
@@ -141,6 +156,8 @@
 				342D4F3A2E4D3DE6001BB604 /* Features */,
 				342D4F3F2E4D3DF1001BB604 /* Services */,
 				342D4F432E4D3DF6001BB604 /* Models */,
+				3499BE3F2E4EDAAB00552617 /* Design */,
+				3499BE422E4EDAE000552617 /* Components */,
 			);
 			name = FitnessAgent;
 			packageProductDependencies = (
@@ -152,7 +169,7 @@
 				342D4F502E4D3F51001BB604 /* Supabase */,
 			);
 			productName = FitnessAgent;
-			productReference = 342D4EF62E4D3180001BB604 /* FitnessAgent.app */;
+			productReference = 34FF5D252E4E9E4500683C6A /* FitnessAgent.app */;
 			productType = "com.apple.product-type.application";
 		};
 		342D4F022E4D3181001BB604 /* FitnessAgentTests */ = {
@@ -175,7 +192,7 @@
 			packageProductDependencies = (
 			);
 			productName = FitnessAgentTests;
-			productReference = 342D4F032E4D3181001BB604 /* FitnessAgentTests.xctest */;
+			productReference = 34FF5D262E4E9E4500683C6A /* FitnessAgentTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		342D4F0C2E4D3181001BB604 /* FitnessAgentUITests */ = {
@@ -198,7 +215,7 @@
 			packageProductDependencies = (
 			);
 			productName = FitnessAgentUITests;
-			productReference = 342D4F0D2E4D3181001BB604 /* FitnessAgentUITests.xctest */;
+			productReference = 34FF5D272E4E9E4500683C6A /* FitnessAgentUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */

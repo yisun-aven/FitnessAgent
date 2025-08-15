@@ -49,3 +49,30 @@ class GenerateTasksRequest(BaseModel):
 
 class GenerateTasksResponse(BaseModel):
     tasks: List[TaskCreate]
+
+
+class ProfileBase(BaseModel):
+    sex: Optional[str] = None
+    dob: Optional[date] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    unit_pref: Optional[str] = None
+    activity_level: Optional[str] = None
+    fitness_level: Optional[str] = None
+    resting_hr: Optional[float] = None
+    max_hr: Optional[float] = None
+    body_fat_pct: Optional[float] = None
+    medical_conditions: Optional[str] = None
+    injuries: Optional[str] = None
+    timezone: Optional[str] = None
+    locale: Optional[str] = None
+    availability_days: Optional[List[int]] = None
+
+
+class Profile(ProfileBase):
+    id: str
+    created_at: Optional[datetime] = None
+
+
+class ProfileUpsert(ProfileBase):
+    pass

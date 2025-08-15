@@ -32,3 +32,6 @@ node_modules/
 
 # Misc
 *.log
+
+# Ignore VS Code Local History
+.history/

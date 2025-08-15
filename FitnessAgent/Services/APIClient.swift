@@ -43,9 +43,19 @@ final class APIClient: ObservableObject {
     }
 
     // MARK: Tasks
-    func listTasks() async throws -> [TaskItem] {
-        try await request("/tasks", decode: [TaskItem].self)
+    func listTasks(goalId: String? = nil) async throws -> [TaskItem] {
+        let path: String
+        if let gid = goalId, !gid.isEmpty {
+            // URL-encode if needed (ids expected to be simple strings)
+            path = "/tasks?goal_id=\(gid)"
+        } else {
+            path = "/tasks"
+        }
+        return try await request(path, decode: [TaskItem].self)
     }
+
+    // Backwards-compat convenience
+    func listTasks() async throws -> [TaskItem] { try await listTasks(goalId: nil) }
 
     func createTask(_ payload: TaskCreate) async throws -> TaskItem {
         try await request("/tasks", method: "POST", body: payload, decode: TaskItem.self)
@@ -55,6 +65,54 @@ final class APIClient: ObservableObject {
         let req = GenerateTasksRequest(goal: .init(type: goalType, target_value: targetValue, target_date: targetDate))
         return try await request("/tasks/generate", method: "POST", body: req, decode: GenerateTasksResponse.self)
     }
+
+    // MARK: Profile
+    func fetchMyProfile() async throws -> Profile? {
+        try await request("/profile/me", decode: Profile?.self)
+    }
+
+    func upsertProfile(_ payload: ProfileUpsert) async throws -> Profile {
+        try await request("/profile", method: "POST", body: payload, decode: Profile.self)
+    }
+}
+
+// MARK: - Profile Models
+struct Profile: Codable, Identifiable {
+    let id: String
+    let created_at: String?
+    var sex: String?
+    var dob: String? // ISO date string "YYYY-MM-DD"
+    var height_cm: Double?
+    var weight_kg: Double?
+    var unit_pref: String?
+    var activity_level: String?
+    var fitness_level: String?
+    var resting_hr: Double?
+    var max_hr: Double?
+    var body_fat_pct: Double?
+    var medical_conditions: String?
+    var injuries: String?
+    var timezone: String?
+    var locale: String?
+    var availability_days: [Int]?
+}
+
+struct ProfileUpsert: Codable {
+    var sex: String?
+    var dob: String?
+    var height_cm: Double?
+    var weight_kg: Double?
+    var unit_pref: String?
+    var activity_level: String?
+    var fitness_level: String?
+    var resting_hr: Double?
+    var max_hr: Double?
+    var body_fat_pct: Double?
+    var medical_conditions: String?
+    var injuries: String?
+    var timezone: String?
+    var locale: String?
+    var availability_days: [Int]?
 }
 
 // Helper for Encoding any Encodable

@@ -5,10 +5,25 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   created_at timestamp with time zone default now(),
+  -- core onboarding
+  sex text,
+  dob date,
   height_cm numeric,
   weight_kg numeric,
-  dob date,
-  unit_pref text
+  unit_pref text,
+  activity_level text,
+  fitness_level text,
+  -- optional health metrics
+  resting_hr numeric,
+  max_hr numeric,
+  body_fat_pct numeric,
+  -- medical/safety
+  medical_conditions text,
+  injuries text,
+  -- UX / scheduling
+  timezone text,
+  locale text,
+  availability_days integer[]
 );
 
 -- Goals
@@ -34,3 +49,8 @@ create table if not exists public.tasks (
   calendar_event_id text,
   created_at timestamp with time zone default now()
 );
+
+-- Explicitly enable Row Level Security
+alter table public.profiles enable row level security;
+alter table public.goals enable row level security;
+alter table public.tasks enable row level security;

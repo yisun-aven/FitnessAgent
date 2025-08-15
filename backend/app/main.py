@@ -8,6 +8,7 @@ load_dotenv()
 from app.api.goals import router as goals_router
 from app.api.tasks import router as tasks_router
 from app.api.schedule import router as schedule_router
+from app.api.profile import router as profile_router
 
 APP_ENV = os.getenv("APP_ENV", "local")
 
@@ -40,3 +41,4 @@ async def root():
 app.include_router(goals_router, prefix="/goals", tags=["goals"]) 
 app.include_router(tasks_router, prefix="/tasks", tags=["tasks"]) 
 app.include_router(schedule_router, prefix="/schedule", tags=["schedule"]) 
+app.include_router(profile_router, prefix="/profile", tags=["profile"])
