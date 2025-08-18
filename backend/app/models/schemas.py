@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime, date
 
 
@@ -69,10 +69,15 @@ class ProfileBase(BaseModel):
     availability_days: Optional[List[int]] = None
 
 
-class Profile(ProfileBase):
+class Profile(BaseModel):
     id: str
     created_at: Optional[datetime] = None
 
 
 class ProfileUpsert(ProfileBase):
     pass
+
+
+class CreateGoalResponse(BaseModel):
+    goal: Goal
+    agent_output: Optional[Any] = None

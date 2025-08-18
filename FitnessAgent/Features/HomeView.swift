@@ -5,6 +5,7 @@ struct HomeView: View {
     @State private var goals: [Goal] = []
     @State private var isLoading = false
     @State private var errorText: String?
+    @State private var showCoachChat = false
 
     var onSignOut: () -> Void
 
@@ -24,7 +25,7 @@ struct HomeView: View {
                                 LazyVStack(spacing: 14) {
                                     ForEach(goals) { goal in
                                         NavigationLink {
-                                            GoalTasksView(goal: goal)
+                                            GoalDetailView(goal: goal)
                                                 .environmentObject(api)
                                         } label: {
                                             GoalCard(goal: goal)
@@ -37,6 +38,34 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                         .padding(.vertical, 24)
                     }
+                    // Floating Coach Chat button and panel
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .bottom) {
+                            VStack(spacing: 12) {
+                                if showCoachChat {
+                                    CoachChatPanel(onClose: { showCoachChat = false })
+                                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                                }
+                                Button {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                        showCoachChat.toggle()
+                                    }
+                                } label: {
+                                    Image(systemName: showCoachChat ? "xmark" : "message.fill")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 52, height: 52)
+                                        .background(AppTheme.accent.opacity(0.95))
+                                        .clipShape(Circle())
+                                        .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+                                }
+                                .accessibilityLabel("Coach Chat")
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.bottom, 16)
+                            .zIndex(50)
+                        }
                 }
             }
             .navigationTitle("")
@@ -48,18 +77,30 @@ struct HomeView: View {
                         .accessibilityHidden(true)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 14) {
+                    HStack(spacing: 10) {
                         NavigationLink {
                             GoalSelectionView(onContinue: { Task { await loadGoals() } })
                                 .environmentObject(api)
                         } label: {
-                            Label("New Goal", systemImage: "plus.circle.fill")
-                                .labelStyle(.iconOnly)
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("New Goal")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(AppTheme.accent.opacity(0.95))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         Button {
                             onSignOut()
                         } label: {
                             Image(systemName: "rectangle.portrait.and.arrow.right")
+                                .foregroundStyle(AppTheme.textPrimary)
+                                .padding(8)
+                                .pillGlass(cornerRadius: 10)
                         }
                     }
                 }
@@ -83,7 +124,7 @@ struct HomeView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("No goals yet")
                 .font(.title3).bold()
                 .foregroundStyle(AppTheme.textPrimary)
@@ -91,14 +132,9 @@ struct HomeView: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(24)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
+        .glass(cornerRadius: 16)
     }
 
     private func loadGoals() async {
@@ -110,6 +146,112 @@ struct HomeView: View {
     }
 }
 
+// MARK: - Coach Chat (Floating Panel)
+private struct CoachChatPanel: View {
+    @EnvironmentObject private var api: APIClient
+    @State private var messages: [ChatMessage] = [
+        .init(role: "assistant", content: "Hi! I’m your fitness coach. How can I help today?")
+    ]
+    @State private var input: String = ""
+    @State private var isSending = false
+    @State private var errorText: String?
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Coach")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(6)
+                        .background(.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.02))
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(messages) { msg in
+                            HStack {
+                                if msg.role == "assistant" { Spacer(minLength: 0) }
+                                Text(msg.content)
+                                    .padding(12)
+                                    .background(msg.role == "user" ? AppTheme.accent.opacity(0.25) : AppTheme.surfaceStrong)
+                                    .cornerRadius(12)
+                                if msg.role == "user" { Spacer(minLength: 0) }
+                            }
+                            .id(msg.id)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                }
+                .onChange(of: messages) { _ in
+                    if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("Ask your coach...", text: $input, axis: .vertical)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .pillGlass(cornerRadius: 10)
+                Button(action: send) {
+                    if isSending { ProgressView().tint(AppTheme.accent) }
+                    else { Image(systemName: "paperplane.fill") }
+                }
+                .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .pillGlass(cornerRadius: 10)
+            }
+            .padding(10)
+            .background(Color.white.opacity(0.02))
+        }
+        // Match Home content's horizontal padding (.padding(.horizontal, 20))
+        .frame(width: min(UIScreen.main.bounds.width - 40, 420))
+        .frame(maxHeight: min(UIScreen.main.bounds.height * 0.6, 480))
+        .glass(cornerRadius: 18)
+        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+        .alert("Error", isPresented: .constant(errorText != nil), actions: { Button("OK") { errorText = nil } }, message: { Text(errorText ?? "") })
+    }
+
+    private func send() {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        input = ""
+        messages.append(.init(role: "user", content: text))
+        isSending = true
+
+        Task {
+            do {
+                let resp = try await api.coachChat(message: text, goalId: nil)
+                messages.append(.init(role: resp.role, content: resp.content))
+            } catch {
+                errorText = error.localizedDescription
+            }
+            isSending = false
+        }
+    }
+}
+
+// MARK: - Coach Chat
+private struct ChatMessage: Identifiable, Hashable {
+    let id = UUID()
+    let role: String // "user" or "assistant"
+    let content: String
+}
+
 // MARK: - Goal Card
 private struct GoalCard: View {
     let goal: Goal
@@ -117,7 +259,7 @@ private struct GoalCard: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             ZStack {
-                Circle().fill(Color.white.opacity(0.06))
+                Circle().fill(AppTheme.surfaceStrong)
                 Image(systemName: iconName(for: goal.type))
                     .foregroundStyle(AppTheme.accent)
             }
@@ -140,12 +282,7 @@ private struct GoalCard: View {
             Image(systemName: "chevron.right").foregroundStyle(.secondary)
         }
         .padding(16)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
+        .glass(cornerRadius: 16)
     }
 
     private func title(for type: String) -> String {
@@ -243,17 +380,11 @@ private struct TaskRow: View {
                     .font(.caption2)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.06))
-                    .cornerRadius(8)
+                    .pillGlass(cornerRadius: 8)
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
+        .glass(cornerRadius: 14)
     }
 }
 

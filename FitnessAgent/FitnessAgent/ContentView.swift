@@ -48,10 +48,7 @@ struct ContentView: View {
             OnboardingView {
                 // After onboarding completes, go to home (goals list)
                 needsOnboarding = false
-                hasSelectedGoal = true
             }
-        } else if hasSelectedGoal == false {
-            GoalSelectionView(onContinue: { hasSelectedGoal = true })
         } else {
             HomeView(onSignOut: signOut)
         }
@@ -91,6 +88,9 @@ struct ContentView: View {
         } label: {
             Image(systemName: "person.crop.circle")
                 .imageScale(.large)
+                .foregroundStyle(AppTheme.textPrimary)
+                .padding(8)
+                .pillGlass(cornerRadius: 12)
         }
     }
     

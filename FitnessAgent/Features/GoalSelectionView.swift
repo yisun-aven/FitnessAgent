@@ -109,10 +109,8 @@ struct GoalSelectionView: View {
             onContinue()
             dismiss()
 
-            // Fire-and-forget task generation so navigation isn’t blocked
-            Task.detached { [goalType, tv] in
-                try? await api.generateTasks(goalType: goalType, targetValue: tv, targetDate: goal.target_date)
-            }
+            // No regeneration here. Tasks are generated server-side and persisted.
+            // Frontend will fetch tasks via GET when viewing the goal.
         } catch {
             let nsErr = error as NSError
             // Treat user-cancelled network as non-fatal (common when views transition)

@@ -47,28 +47,54 @@ final class APIClient: ObservableObject {
     }
 
     func createGoal(_ payload: GoalCreate) async throws -> Goal {
-        try await request("/goals", method: "POST", body: payload, decode: Goal.self)
+        // Legacy path: server used to return Goal; now it returns {goal, agent_output}.
+        // Keep backward compatibility by reading CreateGoalResponse and returning .goal.
+        let resp = try await request("/goals", method: "POST", body: payload, decode: CreateGoalResponse.self)
+        return resp.goal
+    }
+
+    /// New helper if you want the agent_output as well.
+    func createGoalWithAgent(_ payload: GoalCreate) async throws -> CreateGoalResponse {
+        try await request("/goals", method: "POST", body: payload, decode: CreateGoalResponse.self)
     }
 
     // MARK: Tasks
+    // Legacy: listTasks(goalId:) now delegates to the goals endpoint
     func listTasks(goalId: String? = nil) async throws -> [TaskItem] {
-        let qItems: [URLQueryItem]? = {
-            if let gid = goalId, !gid.isEmpty { return [URLQueryItem(name: "goal_id", value: gid)] }
-            return nil
-        }()
-        return try await request("/tasks", queryItems: qItems, decode: [TaskItem].self)
+        guard let goalId else {
+            throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "listTasks() without goalId is deprecated. Use listGoalTasks(goalId:)"])
+        }
+        return try await listGoalTasks(goalId: goalId)
     }
 
-    // Backwards-compat convenience
-    func listTasks() async throws -> [TaskItem] { try await listTasks(goalId: nil) }
+    // Explicit endpoint that aligns with backend /goals/{goal_id}/tasks
+    func listGoalTasks(goalId: String) async throws -> [TaskItem] {
+        try await request("/goals/\(goalId)/tasks", decode: [TaskItem].self)
+    }
+
+    // Legacy: parameterless listTasks is deprecated and disabled
+    func listTasks() async throws -> [TaskItem] {
+        throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "listTasks() is deprecated. Use listGoalTasks(goalId:)"])
+    }
 
     func createTask(_ payload: TaskCreate) async throws -> TaskItem {
         try await request("/tasks", method: "POST", body: payload, decode: TaskItem.self)
     }
 
+    // Deprecated: do not call. Server generates tasks during goal creation.
+    @available(*, deprecated, message: "Use POST /goals which persists tasks; then GET /goals/{goal_id}/tasks")
     func generateTasks(goalType: String, targetValue: Double?, targetDate: String?) async throws -> GenerateTasksResponse {
-        let req = GenerateTasksRequest(goal: .init(type: goalType, target_value: targetValue, target_date: targetDate))
-        return try await request("/tasks/generate", method: "POST", body: req, decode: GenerateTasksResponse.self)
+        throw NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "generateTasks() is deprecated. Tasks are generated on goal creation and fetched via GET /goals/{goal_id}/tasks."])
+    }
+
+    // MARK: Coach
+    struct CoachChatResponse: Codable { let role: String; let content: String }
+    func coachChat(message: String, goalId: String? = nil) async throws -> CoachChatResponse {
+        struct Payload: Encodable { let user_id: String; let message: String; let goal_id: String? }
+        // Try to pull a stable user id from auth session
+        guard let rawUserId = auth?.session?.user.id else { throw URLError(.userAuthenticationRequired) }
+        let uid = String(describing: rawUserId)
+        return try await request("/coach/chat", method: "POST", body: Payload(user_id: uid, message: message, goal_id: goalId), decode: CoachChatResponse.self)
     }
 
     // MARK: Profile
@@ -79,6 +105,19 @@ final class APIClient: ObservableObject {
     func upsertProfile(_ payload: ProfileUpsert) async throws -> Profile {
         try await request("/profile", method: "POST", body: payload, decode: Profile.self)
     }
+}
+
+// MARK: - Goal create response with agent output
+struct CreateGoalResponse: Codable {
+    let goal: Goal
+    let agent_output: [TaskDraft]? // server returns parsed tasks as an array of dictionaries
+}
+
+struct TaskDraft: Codable {
+    let title: String
+    let description: String?
+    let due_at: String?
+    let status: String?
 }
 
 // MARK: - Profile Models

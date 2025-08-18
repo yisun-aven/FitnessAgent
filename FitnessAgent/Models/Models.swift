@@ -12,6 +12,7 @@ struct Goal: Codable, Identifiable {
     let type: String
     let target_value: Double?
     let target_date: String?
+    let status: String
     let created_at: String
 }
 
