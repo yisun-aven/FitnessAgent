@@ -17,3 +17,4 @@ langchain-core
 langgraph-supervisor
 langgraph==0.5.3
 langgraph-prebuilt==0.5.2
+supabase>=2.6,<3
