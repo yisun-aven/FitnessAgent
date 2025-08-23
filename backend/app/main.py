@@ -8,7 +8,7 @@ import asyncio
 from app.agents.graph import get_coach
 import logging
 from fastapi import Request
-from fastapi.exceptions import HTTPException as FastAPIHTTPException
+from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
@@ -18,6 +18,7 @@ from app.api.goals import router as goals_router
 from app.api.schedule import router as schedule_router
 from app.api.profile import router as profile_router
 from app.api.diagnostics import router as diagnostics_router
+from app.dependencies.chat_store import ChatStore
 
 APP_ENV = os.getenv("APP_ENV", "local")
 
@@ -53,8 +54,8 @@ async def log_requests(request: StarletteRequest, call_next):
         logger.exception(f"!! {request.method} {request.url.path} crashed")
         raise
 
-@app.exception_handler(FastAPIHTTPException)
-async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
     logger.warning(f"HTTPException {exc.status_code} at {request.url.path}: {exc.detail}")
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
@@ -96,3 +97,27 @@ async def coach_chat(req: ChatRequest) -> Dict[str, Any]:
 async def coach_progress(goal_id: str) -> Dict[str, Any]:
     coach = await get_coach()
     return coach.progress(goal_id)
+
+@app.get("/coach/history")
+async def get_chat_history(user_id: str, goal_id: Optional[str] = None, limit: int = 200):
+    """Return persisted chat history for a given (user_id, goal_id?).
+    Messages are returned oldest→newest so the UI can render directly.
+    """
+    try:
+        store = ChatStore()
+        conv_id = store.find_conversation(user_id=user_id, goal_id=goal_id)
+        if not conv_id:
+            return {"conversation_id": None, "messages": []}
+        rows = store.fetch_messages_asc(conversation_id=conv_id, limit_n=limit)
+        messages = [
+            {
+                "role": r.get("role"),
+                "content": r.get("content", {}),
+                "created_at": r.get("created_at"),
+            }
+            for r in (rows or [])
+        ]
+        return {"conversation_id": conv_id, "messages": messages}
+    except Exception as e:
+        # Surface a helpful error
+        raise HTTPException(status_code=500, detail=f"Failed to load chat history: {e}")

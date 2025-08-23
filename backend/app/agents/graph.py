@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, List
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
 from app.agents.client import FitnessCoach
+from app.dependencies.chat_store import ChatStore
 
 
 class CoachService:
@@ -11,8 +12,10 @@ class CoachService:
         self._coach = FitnessCoach()
         self._ready = False
         self._ready_lock = asyncio.Lock()
-        # In-memory per-user histories to preserve context
+        # In-memory per-user histories to preserve context (kept temporarily as fallback/cache)
         self._histories: Dict[str, List[BaseMessage]] = {}
+        # DB-backed transcript store
+        self._store = ChatStore()
 
     async def _ensure_ready(self) -> None:
         if self._ready:
@@ -39,19 +42,25 @@ class CoachService:
         """
         await self._ensure_ready()
 
+        # Prepare annotated user content for routing transparency
         user_content = message
-        # Optionally annotate the message to provide context for routing.
-        if goal_id:
-            user_content = f"[user_id={user_id} goal_id={goal_id}] {message}"
-        else:
-            user_content = f"[user_id={user_id}] {message}"
+        
 
-        # Get existing history for this user, append the new human message
-        history = self._histories.get(user_id, [])
+        # Resolve conversation for (user_id, goal_id); Home uses goal_id=None
+        conversation_id = self._store.get_or_create_conversation(user_id, goal_id)
+
+        # Load recent messages from DB and convert to LangChain messages
+        recent_rows = self._store.fetch_recent_messages(conversation_id, limit_n=30)
+        history: List[BaseMessage] = self._store.to_lc_messages(recent_rows)
+
+        # Append and persist the new human message before invoking the model
         new_human = HumanMessage(content=user_content)
         input_messages: List[BaseMessage] = [*history, new_human]
-        # Debug: show history size and the latest user content
-        print(f"[DEBUG] invoking supervisor: user={user_id} history_len={len(history)} last_user={user_content[:120]}" )
+        self._store.insert_message(conversation_id, role="user", content={"text": user_content})
+
+        print(
+            f"[DEBUG] invoking supervisor: user={user_id} history_len={len(history)} last_user={user_content[:120]}"
+        )
 
         # Invoke the compiled supervisor with full history and our tracer callbacks
         result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
@@ -107,15 +116,9 @@ class CoachService:
         # Find the last AI message
         last_ai = next((m for m in reversed(msgs) if isinstance(m, AIMessage)), None)
 
-        # Update history: keep a rolling context to avoid unbounded growth
+        # Persist assistant turn and return final message
         final_ai = last_ai or AIMessage(content=str(msgs[-1].content))
-        updated_history = input_messages + [final_ai]
-        # Cap history length (messages) for safety
-        MAX_MSGS = 30
-        if len(updated_history) > MAX_MSGS:
-            updated_history = updated_history[-MAX_MSGS:]
-        self._histories[user_id] = updated_history
-
+        self._store.insert_lc_message(conversation_id, final_ai)
         return final_ai
 
     def progress(self, goal_id: str) -> Dict[str, Any]:
