@@ -97,6 +97,18 @@ final class APIClient: ObservableObject {
         return try await request("/coach/chat", method: "POST", body: Payload(user_id: uid, message: message, goal_id: goalId), decode: CoachChatResponse.self)
     }
 
+    // MARK: Chat History
+    struct ChatHistoryAPIMessage: Codable { let role: String; let content: [String:String]?; let created_at: String? }
+    struct ChatHistoryResponse: Codable { let conversation_id: String?; let messages: [ChatHistoryAPIMessage] }
+
+    func fetchChatHistory(goalId: String? = nil, limit: Int = 200) async throws -> ChatHistoryResponse {
+        guard let rawUserId = auth?.session?.user.id else { throw URLError(.userAuthenticationRequired) }
+        let uid = String(describing: rawUserId)
+        var items = [URLQueryItem(name: "user_id", value: uid), URLQueryItem(name: "limit", value: String(limit))]
+        if let gid = goalId { items.append(URLQueryItem(name: "goal_id", value: gid)) }
+        return try await request("/coach/history", queryItems: items, decode: ChatHistoryResponse.self)
+    }
+
     // MARK: Profile
     func fetchMyProfile() async throws -> Profile? {
         try await request("/profile/me", decode: Profile?.self)
