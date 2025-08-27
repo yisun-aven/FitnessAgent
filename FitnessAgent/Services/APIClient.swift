@@ -102,9 +102,7 @@ final class APIClient: ObservableObject {
     struct ChatHistoryResponse: Codable { let conversation_id: String?; let messages: [ChatHistoryAPIMessage] }
 
     func fetchChatHistory(goalId: String? = nil, limit: Int = 200) async throws -> ChatHistoryResponse {
-        guard let rawUserId = auth?.session?.user.id else { throw URLError(.userAuthenticationRequired) }
-        let uid = String(describing: rawUserId)
-        var items = [URLQueryItem(name: "user_id", value: uid), URLQueryItem(name: "limit", value: String(limit))]
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
         if let gid = goalId { items.append(URLQueryItem(name: "goal_id", value: gid)) }
         return try await request("/coach/history", queryItems: items, decode: ChatHistoryResponse.self)
     }

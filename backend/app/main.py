@@ -11,6 +11,10 @@ from fastapi import Request
 from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
+# NEW: additional imports for auth + headers
+from fastapi import Depends, Header
+import httpx
+from app.dependencies.auth import get_current_user
 
 load_dotenv()
 
@@ -69,6 +73,23 @@ app.include_router(schedule_router, prefix="/schedule", tags=["schedule"])
 app.include_router(profile_router, prefix="/profile", tags=["profile"])
 app.include_router(diagnostics_router, prefix="/diagnostics", tags=["diagnostics"])
 
+# NEW: Supabase REST helpers (mirror profile.py pattern)
+_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+_SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+def _sb_headers(user_token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {user_token}",
+        "apikey": _SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+async def _sb_request(method: str, url: str, *, headers: dict):
+    # lightweight wrapper; profile.py has a retry variant if needed
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
+        return await client.request(method, url, headers=headers)
+
 # -----------------------------
 # Coach startup + endpoints
 # -----------------------------
@@ -83,14 +104,44 @@ async def _startup_init_coach():
         print(f"[startup] Coach init failed: {e}")
 
 class ChatRequest(BaseModel):
-    user_id: str
+    # user_id now optional and validated against JWT if provided
+    user_id: Optional[str] = None
     message: str
     goal_id: Optional[str] = None
 
 @app.post("/coach/chat")
-async def coach_chat(req: ChatRequest) -> Dict[str, Any]:
+async def coach_chat(
+    req: ChatRequest,
+    user_obj = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    uid = user_obj.get("id")
+
+    # If client sent user_id, enforce it matches JWT-derived uid
+    if req.user_id and req.user_id.lower() != uid:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+
+    # If goal_id provided, verify ownership via RLS using user's JWT
+    if req.goal_id:
+        if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+            raise HTTPException(status_code=500, detail="Supabase not configured")
+        url = f"{_SUPABASE_URL}/rest/v1/goals?select=id&id=eq.{req.goal_id}"
+        resp = await _sb_request("GET", url, headers=_sb_headers(token))
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail="Failed to verify goal ownership")
+        rows = []
+        try:
+            rows = resp.json() if isinstance(resp.json(), list) else []
+        except Exception:
+            rows = []
+        if not rows:
+            raise HTTPException(status_code=404, detail="Goal not found or not owned by user")
+
     coach = await get_coach()
-    final = await coach.ainvoke_chat(user_id=req.user_id, message=req.message, goal_id=req.goal_id)
+    final = await coach.ainvoke_chat(user_id=uid, message=req.message, goal_id=req.goal_id)
     return {"role": "assistant", "content": final.content}
 
 @app.get("/coach/progress")
@@ -99,13 +150,21 @@ async def coach_progress(goal_id: str) -> Dict[str, Any]:
     return coach.progress(goal_id)
 
 @app.get("/coach/history")
-async def get_chat_history(user_id: str, goal_id: Optional[str] = None, limit: int = 200):
-    """Return persisted chat history for a given (user_id, goal_id?).
+async def get_chat_history(
+    goal_id: Optional[str] = None,
+    limit: int = 200,
+    user_obj = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+):
+    """Return persisted chat history for the authenticated user (and optional goal_id).
     Messages are returned oldest→newest so the UI can render directly.
     """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    uid = user_obj.get("id")
     try:
         store = ChatStore()
-        conv_id = store.find_conversation(user_id=user_id, goal_id=goal_id)
+        conv_id = store.find_conversation(user_id=uid, goal_id=goal_id)
         if not conv_id:
             return {"conversation_id": None, "messages": []}
         rows = store.fetch_messages_asc(conversation_id=conv_id, limit_n=limit)
