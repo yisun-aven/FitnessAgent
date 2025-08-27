@@ -4,6 +4,23 @@ from typing import Any, Dict, List, Optional
 
 import os
 from supabase import create_client
+import httpx
+
+_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+_SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+def _sb_headers(user_token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {user_token}",
+        "apikey": _SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+_HTTPX_TIMEOUT = httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)
+async def _sb_request(method: str, url: str, *, headers: dict, json: dict | None = None):
+    async with httpx.AsyncClient(timeout=_HTTPX_TIMEOUT) as client:
+        return await client.request(method, url, headers=headers, json=json)
 
 from langchain_core.messages import (
     AIMessage,
@@ -72,9 +89,17 @@ class ChatStore:
       messages(id uuid pk, conversation_id uuid fk, role text, content jsonb, created_at timestamptz)
     """
 
-    def __init__(self) -> None:
-        creds = _get_supabase_keys()
-        self._supa = create_client(creds["url"], creds["key"])
+    def __init__(self, user_token: Optional[str] = None) -> None:
+        # If a user token is provided, prefer REST with RLS
+        self._user_token = user_token
+        if user_token:
+            # REST mode: RLS enforced by Supabase using JWT
+            self._use_rest = True
+        else:
+            # Fallback to existing client (may use service role)
+            self._use_rest = False
+            creds = _get_supabase_keys()
+            self._supa = create_client(creds["url"], creds["key"]) 
 
     def _from_table(self, table: str):
         """Return a builder with select/insert support. Use .table(...) for compatibility."""
@@ -82,6 +107,33 @@ class ChatStore:
 
     def get_or_create_conversation(self, user_id: str, goal_id: Optional[str] = None) -> str:
         """Return an existing conversation id for (user_id, goal_id) or create one."""
+        if self._use_rest:
+            if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+                raise RuntimeError("Supabase not configured")
+            # Try to find existing
+            base = f"{_SUPABASE_URL}/rest/v1/conversations?select=id&user_id=eq.{user_id}"
+            if goal_id is None:
+                url = base + "&goal_id=is.null&order=created_at.desc&limit=1"
+            else:
+                url = base + f"&goal_id=eq.{goal_id}&order=created_at.desc&limit=1"
+            # Synchronous style wrapper for simplicity
+            import anyio
+            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            if resp.status_code != 200:
+                raise RuntimeError(f"Failed to query conversations: {resp.status_code} {resp.text}")
+            data = resp.json() or []
+            if isinstance(data, list) and data:
+                return data[0]["id"]
+            # Create new
+            payload = {"user_id": user_id, "goal_id": goal_id}
+            resp2 = anyio.run(_sb_request, "POST", f"{_SUPABASE_URL}/rest/v1/conversations", headers=_sb_headers(self._user_token), json=payload)
+            if resp2.status_code not in (200, 201):
+                raise RuntimeError(f"Failed to create conversation: {resp2.status_code} {resp2.text}")
+            body = resp2.json()
+            if isinstance(body, list) and body:
+                return body[0]["id"]
+            return body["id"]
+        # fallback client path
         q = (
             self._from_table("conversations")
             .select("id")
@@ -90,7 +142,6 @@ class ChatStore:
             .limit(1)
         )
         if goal_id is None:
-            # Some client versions support .is_ for NULL checks; fallback to .filter if needed
             if hasattr(q, "is_"):
                 q = q.is_("goal_id", None)
             else:
@@ -118,12 +169,21 @@ class ChatStore:
         """Return conversation id for (user_id, goal_id) if it exists; else None.
         Does not create new rows.
         """
+        if self._use_rest:
+            if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+                raise RuntimeError("Supabase not configured")
+            base = f"{_SUPABASE_URL}/rest/v1/conversations?select=id&user_id=eq.{user_id}"
+            url = base + ("&goal_id=is.null" if goal_id is None else f"&goal_id=eq.{goal_id}") + "&order=created_at.desc&limit=1"
+            import anyio
+            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            if resp.status_code != 200:
+                raise RuntimeError(f"Failed to query conversations: {resp.status_code} {resp.text}")
+            data = resp.json() or []
+            if isinstance(data, list) and data:
+                return data[0].get("id")
+            return None
         q = (
-            self._from_table("conversations")
-            .select("id")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(1)
+            self._from_table("conversations").select("id").eq("user_id", user_id).order("created_at", desc=True).limit(1)
         )
         if goal_id is None:
             if hasattr(q, "is_"):
@@ -142,6 +202,20 @@ class ChatStore:
 
     def fetch_recent_messages(self, conversation_id: str, limit_n: int = 30) -> List[Dict[str, Any]]:
         """Return latest N messages for a conversation in chronological order."""
+        if self._use_rest:
+            if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+                raise RuntimeError("Supabase not configured")
+            import anyio
+            url = (
+                f"{_SUPABASE_URL}/rest/v1/messages?select=*&conversation_id=eq.{conversation_id}"
+                f"&order=created_at.desc&limit={limit_n}"
+            )
+            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            if resp.status_code != 200:
+                raise RuntimeError(f"Failed to fetch messages: {resp.status_code} {resp.text}")
+            rows = resp.json() or []
+            rows.reverse()
+            return rows
         resp = (
             self._from_table("messages")
             .select("*")
@@ -156,6 +230,18 @@ class ChatStore:
 
     def fetch_messages_asc(self, conversation_id: str, limit_n: int = 200) -> List[Dict[str, Any]]:
         """Return messages oldest→newest for display."""
+        if self._use_rest:
+            if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+                raise RuntimeError("Supabase not configured")
+            import anyio
+            url = (
+                f"{_SUPABASE_URL}/rest/v1/messages?select=*&conversation_id=eq.{conversation_id}"
+                f"&order=created_at.asc&limit={limit_n}"
+            )
+            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            if resp.status_code != 200:
+                raise RuntimeError(f"Failed to fetch messages: {resp.status_code} {resp.text}")
+            return resp.json() or []
         resp = (
             self._from_table("messages")
             .select("*")
@@ -167,25 +253,23 @@ class ChatStore:
         rows = resp.data or []
         return rows
 
-    def to_lc_messages(self, rows: List[Dict[str, Any]]) -> List[BaseMessage]:
-        out: List[BaseMessage] = []
-        for r in rows:
-            role = r.get("role")
-            content = r.get("content", {})
-            out.append(_to_lc_message(role, content))
-        return out
-
     def insert_message(self, conversation_id: str, role: str, content: Dict[str, Any]) -> Dict[str, Any]:
-        payload = {
-            "conversation_id": conversation_id,
-            "role": role,
-            "content": content,
-        }
-        resp = (
-            self._from_table("messages")
-            .insert(payload)
-            .execute()
-        )
+        payload = {"conversation_id": conversation_id, "role": role, "content": content}
+        if self._use_rest:
+            if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+                raise RuntimeError("Supabase not configured")
+            import anyio
+            url = f"{_SUPABASE_URL}/rest/v1/messages"
+            resp = anyio.run(_sb_request, "POST", url, headers=_sb_headers(self._user_token), json=payload)
+            if resp.status_code not in (200, 201):
+                raise RuntimeError(f"Failed to insert message: {resp.status_code} {resp.text}")
+            data = resp.json() or []
+            if isinstance(data, list) and data:
+                return data[0]
+            if isinstance(data, dict):
+                return data
+            return {}
+        resp = self._from_table("messages").insert(payload).execute()
         data = resp.data or []
         if isinstance(data, list) and data:
             return data[0]
@@ -196,3 +280,11 @@ class ChatStore:
     def insert_lc_message(self, conversation_id: str, msg: BaseMessage) -> Dict[str, Any]:
         mapped = _from_lc_message(msg)
         return self.insert_message(conversation_id, mapped["role"], mapped["content"])
+
+    def to_lc_messages(self, rows: List[Dict[str, Any]]) -> List[BaseMessage]:
+        out: List[BaseMessage] = []
+        for r in rows:
+            role = r.get("role")
+            content = r.get("content", {})
+            out.append(_to_lc_message(role, content))
+        return out

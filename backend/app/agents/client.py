@@ -1,13 +1,16 @@
+from re import S
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent, ToolNode
 from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.tools import tool
 from typing import Any, Dict, List, Iterable
 import asyncio 
 from dotenv import load_dotenv
 import os
+import httpx
 from app.agents.prompts import SQL_AGENT_PROMPT, GOALS_AGENT_PROMPT, SUPERVISOR_PROMPT
 
 # Load environment variables from .env file
@@ -18,6 +21,8 @@ load_dotenv()
 SUPABASE_ACCESS_TOKEN = os.getenv("SUPABASE_PAT")
 SUPABASE_PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID")  # optional but recommended
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 class TracingCallbackHandler(BaseCallbackHandler):
     """Lightweight tracer that prints key steps and captures them in-memory.
@@ -120,6 +125,8 @@ class TracingCallbackHandler(BaseCallbackHandler):
 
 class FitnessCoach:
     def __init__(self):
+        # Per-request user JWT injected by graph before invocation
+        self.current_jwt: str | None = None
         # Initialize MCP client to run your servers locally
         self.mcp_client = MultiServerMCPClient({
             "supabase": {
@@ -153,7 +160,49 @@ class FitnessCoach:
 
     async def setup_agents(self):
         sql_tools = await self.mcp_client.get_tools(server_name="supabase")
-        goals_tools = await self.mcp_client.get_tools(server_name="goals")
+        #goals_tools = await self.mcp_client.get_tools(server_name="goals")
+        
+        # Do not expose MCP goals tools directly; use JWT-injected Python tools instead
+
+        # Helpers
+        def _sb_headers(jwt: str) -> dict:
+            return {
+                "Authorization": f"Bearer {jwt}",
+                "apikey": SUPABASE_ANON_KEY,
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            }
+
+        @tool("list_my_goals", return_direct=False)
+        def list_my_goals(limit: int = 20) -> List[dict]:
+            """List YOUR goals (RLS-enforced). limit: 1-200."""
+            jwt = self.current_jwt
+            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY:
+                return []
+            url = f"{SUPABASE_URL}/rest/v1/goals?select=*&order=created_at.desc&limit={int(limit)}"
+            with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
+                resp = client.get(url, headers=_sb_headers(jwt))
+            if resp.status_code != 200:
+                return []
+            data = resp.json() or []
+            return data if isinstance(data, list) else []
+
+        @tool("list_goal_tasks", return_direct=False)
+        def list_goal_tasks(goal_id: str, limit: int = 50) -> List[dict]:
+            """List tasks for YOUR goal (RLS-enforced). Provide goal_id and optional limit."""
+            jwt = self.current_jwt
+            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY:
+                return []
+            url = (
+                f"{SUPABASE_URL}/rest/v1/tasks?select=*&goal_id=eq.{goal_id}"
+                f"&order=due_at.asc&limit={int(limit)}"
+            )
+            with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
+                resp = client.get(url, headers=_sb_headers(jwt))
+            if resp.status_code != 200:
+                return []
+            data = resp.json() or []
+            return data if isinstance(data, list) else []
 
         # Create subagents
         # sql_agent = create_react_agent(
@@ -172,7 +221,8 @@ class FitnessCoach:
 
         supervisor = create_supervisor(
             agents=[goals_agent],
-            tools=goals_tools,
+            #tools=goals_tools,
+            tools=[list_my_goals, list_goal_tasks],
             model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
             prompt=SUPERVISOR_PROMPT,
         )

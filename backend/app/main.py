@@ -141,7 +141,7 @@ async def coach_chat(
             raise HTTPException(status_code=404, detail="Goal not found or not owned by user")
 
     coach = await get_coach()
-    final = await coach.ainvoke_chat(user_id=uid, message=req.message, goal_id=req.goal_id)
+    final = await coach.ainvoke_chat(user_id=uid, user_jwt=token, message=req.message, goal_id=req.goal_id)
     return {"role": "assistant", "content": final.content}
 
 @app.get("/coach/progress")

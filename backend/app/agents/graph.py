@@ -31,6 +31,7 @@ class CoachService:
         self,
         *,
         user_id: str,
+        user_jwt: Optional[str] = None,
         message: str,
         goal_id: Optional[str] = None,
     ) -> AIMessage:
@@ -62,11 +63,18 @@ class CoachService:
             f"[DEBUG] invoking supervisor: user={user_id} history_len={len(history)} last_user={user_content[:120]}"
         )
 
-        # Invoke the compiled supervisor with full history and our tracer callbacks
-        result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
-            {"messages": input_messages},
-            config={"callbacks": [self._coach.tracer]},
-        )
+        # Inject per-request JWT into the coach so downstream tools use RLS
+        prev_jwt = getattr(self._coach, "current_jwt", None)
+        self._coach.current_jwt = user_jwt
+        try:
+            # Invoke the compiled supervisor with full history and our tracer callbacks
+            result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
+                {"messages": input_messages},
+                config={"callbacks": [self._coach.tracer]},
+            )
+        finally:
+            # Restore previous JWT to avoid leaking across requests
+            self._coach.current_jwt = prev_jwt
 
         # LangGraph returns a dict with messages under the `messages` key; the last one
         # should be the AI's final message.
