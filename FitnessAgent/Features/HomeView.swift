@@ -197,8 +197,8 @@ private struct CoachChatPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                 }
-                .onChange(of: messages) { _ in
-                    if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                .onChange(of: messages) { _, newValue in
+                    if let last = newValue.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
                 }
             }
 

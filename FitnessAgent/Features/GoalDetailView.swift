@@ -9,6 +9,8 @@ struct GoalDetailView: View {
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
     @State private var showCoachChat = false
+    @State private var showDeleteConfirm = false
+    @State private var deleting = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -126,18 +128,32 @@ struct GoalDetailView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Button(action: { dismiss() }) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .black, design: .rounded))
-                        .foregroundStyle(AppTheme.accent)
-                        .frame(width: 34, height: 34, alignment: .center)
-                        .contentShape(Rectangle())
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(role: .destructive, action: { showDeleteConfirm = true }) {
+                    if deleting { ProgressView().tint(.red) } else { Image(systemName: "trash") }
+                }
+                .disabled(deleting)
+                .accessibilityLabel("Delete Goal")
             }
         }
         .background(AppTheme.backgroundGradient.ignoresSafeArea())
         .task(id: goal.id) { await load() }
         .refreshable { await load() }
+        .alert("Delete Goal?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) { Task { await deleteGoal() } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will delete the goal and its data. This action cannot be undone.")
+        }
     }
 
     private func load() async {
@@ -147,6 +163,16 @@ struct GoalDetailView: View {
             error = nil
         } catch {
             tasks = []
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func deleteGoal() async {
+        deleting = true; defer { deleting = false }
+        do {
+            try await api.deleteGoal(goalId: goal.id)
+            dismiss()
+        } catch {
             self.error = error.localizedDescription
         }
     }
@@ -205,8 +231,8 @@ private struct GoalCoachChatPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                 }
-                .onChange(of: messages) { _ in
-                    if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                .onChange(of: messages) { _, newValue in
+                    if let last = newValue.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
                 }
             }
 
