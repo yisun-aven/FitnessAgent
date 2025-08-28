@@ -67,11 +67,21 @@ class CoachService:
         prev_jwt = getattr(self._coach, "current_jwt", None)
         self._coach.current_jwt = user_jwt
         try:
-            # Invoke the compiled supervisor with full history and our tracer callbacks
-            result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
-                {"messages": input_messages},
-                config={"callbacks": [self._coach.tracer]},
-            )
+            # Inject per-request auth and goal context into the coach for tool defaults
+            old_jwt = getattr(self._coach, "current_jwt", None)
+            old_gid = getattr(self._coach, "current_goal_id", None)
+            self._coach.current_jwt = user_jwt
+            self._coach.current_goal_id = goal_id
+            try:
+                # Invoke the compiled supervisor with full history and our tracer callbacks
+                result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
+                    {"messages": input_messages},
+                    config={"callbacks": [self._coach.tracer]},
+                )
+            finally:
+                # Restore previous context to avoid leaking state across requests
+                self._coach.current_jwt = old_jwt
+                self._coach.current_goal_id = old_gid
         finally:
             # Restore previous JWT to avoid leaking across requests
             self._coach.current_jwt = prev_jwt

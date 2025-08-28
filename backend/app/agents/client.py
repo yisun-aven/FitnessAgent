@@ -127,6 +127,8 @@ class FitnessCoach:
     def __init__(self):
         # Per-request user JWT injected by graph before invocation
         self.current_jwt: str | None = None
+        # Per-request goal context (Goal Detail view)
+        self.current_goal_id: str | None = None
         # Initialize MCP client to run your servers locally
         self.mcp_client = MultiServerMCPClient({
             "supabase": {
@@ -161,7 +163,7 @@ class FitnessCoach:
     async def setup_agents(self):
         sql_tools = await self.mcp_client.get_tools(server_name="supabase")
         #goals_tools = await self.mcp_client.get_tools(server_name="goals")
-        
+
         # Do not expose MCP goals tools directly; use JWT-injected Python tools instead
 
         # Helpers
@@ -188,13 +190,14 @@ class FitnessCoach:
             return data if isinstance(data, list) else []
 
         @tool("list_goal_tasks", return_direct=False)
-        def list_goal_tasks(goal_id: str, limit: int = 50) -> List[dict]:
-            """List tasks for YOUR goal (RLS-enforced). Provide goal_id and optional limit."""
+        def list_goal_tasks(goal_id: str | None = None, limit: int = 50) -> List[dict]:
+            """List tasks for YOUR goal (RLS-enforced). If goal_id is omitted, uses the current goal context."""
             jwt = self.current_jwt
-            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            gid = goal_id or self.current_goal_id
+            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY or not gid:
                 return []
             url = (
-                f"{SUPABASE_URL}/rest/v1/tasks?select=*&goal_id=eq.{goal_id}"
+                f"{SUPABASE_URL}/rest/v1/tasks?select=*&goal_id=eq.{gid}"
                 f"&order=due_at.asc&limit={int(limit)}"
             )
             with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
@@ -203,6 +206,11 @@ class FitnessCoach:
                 return []
             data = resp.json() or []
             return data if isinstance(data, list) else []
+
+        @tool("list_tasks_for_current_goal", return_direct=False)
+        def list_tasks_for_current_goal(limit: int = 50) -> List[dict]:
+            """List tasks for the CURRENT goal context (no arguments)."""
+            return list_goal_tasks(None, limit)
 
         # Create subagents
         # sql_agent = create_react_agent(
