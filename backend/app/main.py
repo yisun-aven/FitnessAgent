@@ -163,7 +163,8 @@ async def get_chat_history(
         raise HTTPException(status_code=401, detail="Missing bearer token")
     uid = user_obj.get("id")
     try:
-        store = ChatStore()
+        # Enforce RLS by using per-request JWT with REST-backed ChatStore
+        store = ChatStore(user_token=authorization.split(" ", 1)[1])
         conv_id = store.find_conversation(user_id=uid, goal_id=goal_id)
         if not conv_id:
             return {"conversation_id": None, "messages": []}

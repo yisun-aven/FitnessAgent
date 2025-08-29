@@ -18,9 +18,9 @@ def _sb_headers(user_token: str) -> dict:
     }
 
 _HTTPX_TIMEOUT = httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)
-async def _sb_request(method: str, url: str, *, headers: dict, json: dict | None = None):
-    async with httpx.AsyncClient(timeout=_HTTPX_TIMEOUT) as client:
-        return await client.request(method, url, headers=headers, json=json)
+def _sb_request(method: str, url: str, *, headers: dict, json: dict | None = None):
+    with httpx.Client(timeout=_HTTPX_TIMEOUT) as client:
+        return client.request(method, url, headers=headers, json=json)
 
 from langchain_core.messages import (
     AIMessage,
@@ -116,23 +116,23 @@ class ChatStore:
                 url = base + "&goal_id=is.null&order=created_at.desc&limit=1"
             else:
                 url = base + f"&goal_id=eq.{goal_id}&order=created_at.desc&limit=1"
-            # Synchronous style wrapper for simplicity
-            import anyio
-            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
-            if resp.status_code != 200:
-                raise RuntimeError(f"Failed to query conversations: {resp.status_code} {resp.text}")
-            data = resp.json() or []
-            if isinstance(data, list) and data:
-                return data[0]["id"]
+            resp = _sb_request("GET", url, headers=_sb_headers(self._user_token))
+            if resp.status_code == 200:
+                data = resp.json() or []
+                if isinstance(data, list) and data:
+                    return data[0]["id"]
             # Create new
             payload = {"user_id": user_id, "goal_id": goal_id}
-            resp2 = anyio.run(_sb_request, "POST", f"{_SUPABASE_URL}/rest/v1/conversations", headers=_sb_headers(self._user_token), json=payload)
+            create_url = f"{_SUPABASE_URL}/rest/v1/conversations"
+            resp2 = _sb_request("POST", create_url, headers=_sb_headers(self._user_token), json=payload)
             if resp2.status_code not in (200, 201):
                 raise RuntimeError(f"Failed to create conversation: {resp2.status_code} {resp2.text}")
-            body = resp2.json()
-            if isinstance(body, list) and body:
-                return body[0]["id"]
-            return body["id"]
+            data2 = resp2.json() or []
+            if isinstance(data2, list) and data2:
+                return data2[0]["id"]
+            if isinstance(data2, dict):
+                return data2.get("id")
+            raise RuntimeError("Conversation create response unexpected")
         # fallback client path
         q = (
             self._from_table("conversations")
@@ -174,13 +174,14 @@ class ChatStore:
                 raise RuntimeError("Supabase not configured")
             base = f"{_SUPABASE_URL}/rest/v1/conversations?select=id&user_id=eq.{user_id}"
             url = base + ("&goal_id=is.null" if goal_id is None else f"&goal_id=eq.{goal_id}") + "&order=created_at.desc&limit=1"
-            import anyio
-            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            resp = _sb_request("GET", url, headers=_sb_headers(self._user_token))
             if resp.status_code != 200:
-                raise RuntimeError(f"Failed to query conversations: {resp.status_code} {resp.text}")
+                raise RuntimeError(f"Failed to find conversation: {resp.status_code} {resp.text}")
             data = resp.json() or []
             if isinstance(data, list) and data:
                 return data[0].get("id")
+            if isinstance(data, dict):
+                return data.get("id")
             return None
         q = (
             self._from_table("conversations").select("id").eq("user_id", user_id).order("created_at", desc=True).limit(1)
@@ -205,12 +206,11 @@ class ChatStore:
         if self._use_rest:
             if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
                 raise RuntimeError("Supabase not configured")
-            import anyio
             url = (
                 f"{_SUPABASE_URL}/rest/v1/messages?select=*&conversation_id=eq.{conversation_id}"
                 f"&order=created_at.desc&limit={limit_n}"
             )
-            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            resp = _sb_request("GET", url, headers=_sb_headers(self._user_token))
             if resp.status_code != 200:
                 raise RuntimeError(f"Failed to fetch messages: {resp.status_code} {resp.text}")
             rows = resp.json() or []
@@ -233,12 +233,11 @@ class ChatStore:
         if self._use_rest:
             if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
                 raise RuntimeError("Supabase not configured")
-            import anyio
             url = (
                 f"{_SUPABASE_URL}/rest/v1/messages?select=*&conversation_id=eq.{conversation_id}"
                 f"&order=created_at.asc&limit={limit_n}"
             )
-            resp = anyio.run(_sb_request, "GET", url, headers=_sb_headers(self._user_token))
+            resp = _sb_request("GET", url, headers=_sb_headers(self._user_token))
             if resp.status_code != 200:
                 raise RuntimeError(f"Failed to fetch messages: {resp.status_code} {resp.text}")
             return resp.json() or []
@@ -258,9 +257,8 @@ class ChatStore:
         if self._use_rest:
             if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
                 raise RuntimeError("Supabase not configured")
-            import anyio
             url = f"{_SUPABASE_URL}/rest/v1/messages"
-            resp = anyio.run(_sb_request, "POST", url, headers=_sb_headers(self._user_token), json=payload)
+            resp = _sb_request("POST", url, headers=_sb_headers(self._user_token), json=payload)
             if resp.status_code not in (200, 201):
                 raise RuntimeError(f"Failed to insert message: {resp.status_code} {resp.text}")
             data = resp.json() or []

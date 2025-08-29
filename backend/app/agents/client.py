@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import os
 import httpx
 from app.agents.prompts import SQL_AGENT_PROMPT, GOALS_AGENT_PROMPT, SUPERVISOR_PROMPT
+import contextvars
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,6 +24,9 @@ SUPABASE_PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID")  # optional but recommend
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+CURRENT_JWT: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_jwt", default=None)
+CURRENT_GOAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_goal_id", default=None)
 
 class TracingCallbackHandler(BaseCallbackHandler):
     """Lightweight tracer that prints key steps and captures them in-memory.
@@ -125,10 +129,6 @@ class TracingCallbackHandler(BaseCallbackHandler):
 
 class FitnessCoach:
     def __init__(self):
-        # Per-request user JWT injected by graph before invocation
-        self.current_jwt: str | None = None
-        # Per-request goal context (Goal Detail view)
-        self.current_goal_id: str | None = None
         # Initialize MCP client to run your servers locally
         self.mcp_client = MultiServerMCPClient({
             "supabase": {
@@ -178,7 +178,7 @@ class FitnessCoach:
         @tool("list_my_goals", return_direct=False)
         def list_my_goals(limit: int = 20) -> List[dict]:
             """List YOUR goals (RLS-enforced). limit: 1-200."""
-            jwt = self.current_jwt
+            jwt = CURRENT_JWT.get()
             if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY:
                 return []
             url = f"{SUPABASE_URL}/rest/v1/goals?select=*&order=created_at.desc&limit={int(limit)}"
@@ -192,8 +192,8 @@ class FitnessCoach:
         @tool("list_goal_tasks", return_direct=False)
         def list_goal_tasks(goal_id: str | None = None, limit: int = 50) -> List[dict]:
             """List tasks for YOUR goal (RLS-enforced). If goal_id is omitted, uses the current goal context."""
-            jwt = self.current_jwt
-            gid = goal_id or self.current_goal_id
+            jwt = CURRENT_JWT.get()
+            gid = goal_id or CURRENT_GOAL_ID.get()
             if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY or not gid:
                 return []
             url = (

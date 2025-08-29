@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, List
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
-from app.agents.client import FitnessCoach
+from app.agents.client import FitnessCoach, CURRENT_JWT, CURRENT_GOAL_ID
 from app.dependencies.chat_store import ChatStore
 
 
@@ -14,7 +14,7 @@ class CoachService:
         self._ready_lock = asyncio.Lock()
         # In-memory per-user histories to preserve context (kept temporarily as fallback/cache)
         self._histories: Dict[str, List[BaseMessage]] = {}
-        # DB-backed transcript store
+        # DB-backed transcript store (avoid shared store for RLS; use per-request store in ainvoke_chat)
         self._store = ChatStore()
 
     async def _ensure_ready(self) -> None:
@@ -31,7 +31,7 @@ class CoachService:
         self,
         *,
         user_id: str,
-        user_jwt: Optional[str] = None,
+        user_jwt: str,
         message: str,
         goal_id: Optional[str] = None,
     ) -> AIMessage:
@@ -47,44 +47,42 @@ class CoachService:
         user_content = message
         
 
+        # Create a per-request ChatStore with the user's JWT to enforce RLS
+        if not user_jwt:
+            # Programming error: all user-facing calls must provide a JWT so RLS is enforced
+            raise RuntimeError("ainvoke_chat called without user_jwt; JWT is required for RLS")
+
+        store = ChatStore(user_token=user_jwt)
+
         # Resolve conversation for (user_id, goal_id); Home uses goal_id=None
-        conversation_id = self._store.get_or_create_conversation(user_id, goal_id)
+        conversation_id = store.get_or_create_conversation(user_id, goal_id)
 
         # Load recent messages from DB and convert to LangChain messages
-        recent_rows = self._store.fetch_recent_messages(conversation_id, limit_n=30)
-        history: List[BaseMessage] = self._store.to_lc_messages(recent_rows)
+        recent_rows = store.fetch_recent_messages(conversation_id, limit_n=30)
+        history: List[BaseMessage] = store.to_lc_messages(recent_rows)
 
         # Append and persist the new human message before invoking the model
         new_human = HumanMessage(content=user_content)
         input_messages: List[BaseMessage] = [*history, new_human]
-        self._store.insert_message(conversation_id, role="user", content={"text": user_content})
+        store.insert_message(conversation_id, role="user", content={"text": user_content})
 
         print(
             f"[DEBUG] invoking supervisor: user={user_id} history_len={len(history)} last_user={user_content[:120]}"
         )
 
-        # Inject per-request JWT into the coach so downstream tools use RLS
-        prev_jwt = getattr(self._coach, "current_jwt", None)
-        self._coach.current_jwt = user_jwt
+        # Set per-request auth/goal context via contextvars so tools can read them safely
+        jwt_token = CURRENT_JWT.set(user_jwt)
+        gid_token = CURRENT_GOAL_ID.set(goal_id)
         try:
-            # Inject per-request auth and goal context into the coach for tool defaults
-            old_jwt = getattr(self._coach, "current_jwt", None)
-            old_gid = getattr(self._coach, "current_goal_id", None)
-            self._coach.current_jwt = user_jwt
-            self._coach.current_goal_id = goal_id
-            try:
-                # Invoke the compiled supervisor with full history and our tracer callbacks
-                result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
-                    {"messages": input_messages},
-                    config={"callbacks": [self._coach.tracer]},
-                )
-            finally:
-                # Restore previous context to avoid leaking state across requests
-                self._coach.current_jwt = old_jwt
-                self._coach.current_goal_id = old_gid
+            # Invoke the compiled supervisor with full history and our tracer callbacks
+            result: Dict[str, Any] = await self._coach.supervisor.ainvoke(
+                {"messages": input_messages},
+                config={"callbacks": [self._coach.tracer]},
+            )
         finally:
-            # Restore previous JWT to avoid leaking across requests
-            self._coach.current_jwt = prev_jwt
+            # Restore context variables to previous values
+            CURRENT_JWT.reset(jwt_token)
+            CURRENT_GOAL_ID.reset(gid_token)
 
         # LangGraph returns a dict with messages under the `messages` key; the last one
         # should be the AI's final message.
@@ -136,7 +134,7 @@ class CoachService:
 
         # Persist assistant turn and return final message
         final_ai = last_ai or AIMessage(content=str(msgs[-1].content))
-        self._store.insert_lc_message(conversation_id, final_ai)
+        store.insert_lc_message(conversation_id, final_ai)
         return final_ai
 
     def progress(self, goal_id: str) -> Dict[str, Any]:
