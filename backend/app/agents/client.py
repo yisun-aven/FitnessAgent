@@ -149,7 +149,6 @@ class FitnessCoach:
                 "env": {
                     "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
                     "SUPABASE_ANON_KEY": os.getenv("SUPABASE_ANON_KEY", ""),
-                    "SUPABASE_SERVICE_ROLE_KEY": os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
                 },
                 "transport": "stdio",
             },
@@ -161,57 +160,13 @@ class FitnessCoach:
         self.graph = None # This will hold the uncompiled graph for plotting 
 
     async def setup_agents(self):
-        sql_tools = await self.mcp_client.get_tools(server_name="supabase")
-        #goals_tools = await self.mcp_client.get_tools(server_name="goals")
-
-        # Do not expose MCP goals tools directly; use JWT-injected Python tools instead
-
-        # Helpers
-        def _sb_headers(jwt: str) -> dict:
-            return {
-                "Authorization": f"Bearer {jwt}",
-                "apikey": SUPABASE_ANON_KEY,
-                "Content-Type": "application/json",
-                "Prefer": "return=representation",
-            }
-
-        @tool("list_my_goals", return_direct=False)
-        def list_my_goals(limit: int = 20) -> List[dict]:
-            """List YOUR goals (RLS-enforced). limit: 1-200."""
-            jwt = CURRENT_JWT.get()
-            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY:
-                return []
-            url = f"{SUPABASE_URL}/rest/v1/goals?select=*&order=created_at.desc&limit={int(limit)}"
-            with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
-                resp = client.get(url, headers=_sb_headers(jwt))
-            if resp.status_code != 200:
-                return []
-            data = resp.json() or []
-            return data if isinstance(data, list) else []
-
-        @tool("list_goal_tasks", return_direct=False)
-        def list_goal_tasks(goal_id: str | None = None, limit: int = 50) -> List[dict]:
-            """List tasks for YOUR goal (RLS-enforced). If goal_id is omitted, uses the current goal context."""
-            jwt = CURRENT_JWT.get()
-            gid = goal_id or CURRENT_GOAL_ID.get()
-            if not jwt or not SUPABASE_URL or not SUPABASE_ANON_KEY or not gid:
-                return []
-            url = (
-                f"{SUPABASE_URL}/rest/v1/tasks?select=*&goal_id=eq.{gid}"
-                f"&order=due_at.asc&limit={int(limit)}"
-            )
-            with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
-                resp = client.get(url, headers=_sb_headers(jwt))
-            if resp.status_code != 200:
-                return []
-            data = resp.json() or []
-            return data if isinstance(data, list) else []
-
-        @tool("list_tasks_for_current_goal", return_direct=False)
-        def list_tasks_for_current_goal(limit: int = 50) -> List[dict]:
-            """List tasks for the CURRENT goal context (no arguments)."""
-            return list_goal_tasks(None, limit)
-
+        goals_tools = await self.mcp_client.get_tools(server_name="goals")
+        # Map tool name -> tool instance for direct invocation
+        goals_tool_map = {
+            (getattr(t, "name", None) or getattr(t, "lc_name", None) or ""): t
+            for t in goals_tools
+        }
+        
         # Create subagents
         # sql_agent = create_react_agent(
         #     model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
@@ -227,10 +182,53 @@ class FitnessCoach:
             prompt=GOALS_AGENT_PROMPT,
         )
 
+        # Expose MCP goals tools directly, but transparently inject JWT so RLS is enforced.
+        # Define adapters explicitly (no loop) to avoid closure/capture pitfalls.
+        @tool("get_goals")
+        async def mcp_get_goals(limit: int = 20) -> dict:
+            """Fetch the current user's goals via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
+            jwt = CURRENT_JWT.get()
+            if not jwt:
+                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate(client)")
+            try:
+                tool_impl = goals_tool_map.get("get_goals")
+                if tool_impl is None:
+                    raise RuntimeError("mcp_tool_not_found: goals.get_goals not available")
+                result = await tool_impl.ainvoke(
+                    {"args": {"limit": int(limit), "jwt": jwt}},
+                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
+                )
+                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
+            except Exception as e:
+                # Surface the failure to the agent so it can retry/reauth
+                raise RuntimeError(f"mcp:get_goals_failed: {e}")
+        
+        @tool("get_goal_tasks")
+        async def mcp_get_goal_tasks(goal_id: str, limit: int = 50) -> dict:
+            """Fetch tasks for a specific goal via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
+            jwt = CURRENT_JWT.get()
+            gid = goal_id or CURRENT_GOAL_ID.get()
+            if not jwt:
+                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate")
+            if not gid:
+                raise ValueError("goal_id_missing: a goal_id must be provided or set in context")
+            try:
+                tool_impl = goals_tool_map.get("get_goal_tasks")
+                if tool_impl is None:
+                    raise RuntimeError("mcp_tool_not_found: goals.get_goal_tasks not available")
+                result = await tool_impl.ainvoke(
+                    {"args": {"goal_id": gid, "limit": int(limit), "jwt": jwt}},
+                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
+                )
+                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
+            except Exception as e:
+                raise RuntimeError(f"mcp:get_goal_tasks_failed: {e}")
+
+        adapted_goals_tools = [mcp_get_goals, mcp_get_goal_tasks]
+
         supervisor = create_supervisor(
             agents=[goals_agent],
-            #tools=goals_tools,
-            tools=[list_my_goals, list_goal_tasks],
+            tools=adapted_goals_tools,
             model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
             prompt=SUPERVISOR_PROMPT,
         )
