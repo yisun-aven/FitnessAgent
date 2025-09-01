@@ -64,9 +64,18 @@ struct GoalSelectionView: View {
             }
         }
         .navigationTitle("")
+        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Sign Out") { Task { await auth.signOut() } }
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: { dismiss() }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .black, design: .rounded))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
             }
         }
     }

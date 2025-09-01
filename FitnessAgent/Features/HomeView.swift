@@ -77,31 +77,26 @@ struct HomeView: View {
                         .accessibilityHidden(true)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 6) {
                         NavigationLink {
                             GoalSelectionView(onContinue: { Task { await loadGoals() } })
                                 .environmentObject(api)
                         } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 14, weight: .semibold))
-                                Text("New Goal")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            }
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(AppTheme.accent.opacity(0.95))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .black, design: .rounded))
+                                .foregroundStyle(AppTheme.accent)
+                                .frame(width: 32, height: 32)
                         }
+                        .accessibilityLabel("New Goal")
                         Button {
                             onSignOut()
                         } label: {
                             Image(systemName: "rectangle.portrait.and.arrow.right")
-                                .foregroundStyle(AppTheme.textPrimary)
-                                .padding(8)
-                                .pillGlass(cornerRadius: 10)
+                                .font(.system(size: 16, weight: .black, design: .rounded))
+                                .foregroundStyle(AppTheme.accent)
+                                .frame(width: 32, height: 32)
                         }
+                        .accessibilityLabel("Logout")
                     }
                 }
             }

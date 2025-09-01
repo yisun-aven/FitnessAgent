@@ -128,11 +128,10 @@ struct GoalDetailView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Button(action: { dismiss() }) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(8)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Capsule())
+                        .font(.system(size: 16, weight: .black, design: .rounded))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 32, height: 32, alignment: .center)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back")
