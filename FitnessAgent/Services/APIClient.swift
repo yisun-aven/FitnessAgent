@@ -58,6 +58,21 @@ final class APIClient: ObservableObject {
         try await request("/goals", method: "POST", body: payload, decode: CreateGoalResponse.self)
     }
 
+    // Delete a goal owned by the current user (204/200 on success)
+    func deleteGoal(goalId: String) async throws {
+        guard let token = auth?.accessToken else { throw URLError(.userAuthenticationRequired) }
+        var url = AppConfig.backendBaseURL
+        url.append(path: "/goals/\(goalId)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "DELETE /goals failed with status \(http.statusCode)"])
+        }
+    }
+
     // MARK: Tasks
     // Legacy: listTasks(goalId:) now delegates to the goals endpoint
     func listTasks(goalId: String? = nil) async throws -> [TaskItem] {
@@ -95,6 +110,16 @@ final class APIClient: ObservableObject {
         guard let rawUserId = auth?.session?.user.id else { throw URLError(.userAuthenticationRequired) }
         let uid = String(describing: rawUserId)
         return try await request("/coach/chat", method: "POST", body: Payload(user_id: uid, message: message, goal_id: goalId), decode: CoachChatResponse.self)
+    }
+
+    // MARK: Chat History
+    struct ChatHistoryAPIMessage: Codable { let role: String; let content: [String:String]?; let created_at: String? }
+    struct ChatHistoryResponse: Codable { let conversation_id: String?; let messages: [ChatHistoryAPIMessage] }
+
+    func fetchChatHistory(goalId: String? = nil, limit: Int = 200) async throws -> ChatHistoryResponse {
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        if let gid = goalId { items.append(URLQueryItem(name: "goal_id", value: gid)) }
+        return try await request("/coach/history", queryItems: items, decode: ChatHistoryResponse.self)
     }
 
     // MARK: Profile

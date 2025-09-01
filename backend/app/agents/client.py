@@ -1,14 +1,18 @@
+from re import S
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent, ToolNode
 from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.tools import tool
 from typing import Any, Dict, List, Iterable
 import asyncio 
 from dotenv import load_dotenv
 import os
+import httpx
 from app.agents.prompts import SQL_AGENT_PROMPT, GOALS_AGENT_PROMPT, SUPERVISOR_PROMPT
+import contextvars
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +22,11 @@ load_dotenv()
 SUPABASE_ACCESS_TOKEN = os.getenv("SUPABASE_PAT")
 SUPABASE_PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID")  # optional but recommended
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+CURRENT_JWT: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_jwt", default=None)
+CURRENT_GOAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_goal_id", default=None)
 
 class TracingCallbackHandler(BaseCallbackHandler):
     """Lightweight tracer that prints key steps and captures them in-memory.
@@ -140,7 +149,6 @@ class FitnessCoach:
                 "env": {
                     "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
                     "SUPABASE_ANON_KEY": os.getenv("SUPABASE_ANON_KEY", ""),
-                    "SUPABASE_SERVICE_ROLE_KEY": os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
                 },
                 "transport": "stdio",
             },
@@ -152,9 +160,13 @@ class FitnessCoach:
         self.graph = None # This will hold the uncompiled graph for plotting 
 
     async def setup_agents(self):
-        sql_tools = await self.mcp_client.get_tools(server_name="supabase")
         goals_tools = await self.mcp_client.get_tools(server_name="goals")
-
+        # Map tool name -> tool instance for direct invocation
+        goals_tool_map = {
+            (getattr(t, "name", None) or getattr(t, "lc_name", None) or ""): t
+            for t in goals_tools
+        }
+        
         # Create subagents
         # sql_agent = create_react_agent(
         #     model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
@@ -170,9 +182,53 @@ class FitnessCoach:
             prompt=GOALS_AGENT_PROMPT,
         )
 
+        # Expose MCP goals tools directly, but transparently inject JWT so RLS is enforced.
+        # Define adapters explicitly (no loop) to avoid closure/capture pitfalls.
+        @tool("get_goals")
+        async def mcp_get_goals(limit: int = 20) -> dict:
+            """Fetch the current user's goals via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
+            jwt = CURRENT_JWT.get()
+            if not jwt:
+                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate(client)")
+            try:
+                tool_impl = goals_tool_map.get("get_goals")
+                if tool_impl is None:
+                    raise RuntimeError("mcp_tool_not_found: goals.get_goals not available")
+                result = await tool_impl.ainvoke(
+                    {"args": {"limit": int(limit), "jwt": jwt}},
+                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
+                )
+                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
+            except Exception as e:
+                # Surface the failure to the agent so it can retry/reauth
+                raise RuntimeError(f"mcp:get_goals_failed: {e}")
+        
+        @tool("get_goal_tasks")
+        async def mcp_get_goal_tasks(goal_id: str, limit: int = 50) -> dict:
+            """Fetch tasks for a specific goal via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
+            jwt = CURRENT_JWT.get()
+            gid = goal_id or CURRENT_GOAL_ID.get()
+            if not jwt:
+                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate")
+            if not gid:
+                raise ValueError("goal_id_missing: a goal_id must be provided or set in context")
+            try:
+                tool_impl = goals_tool_map.get("get_goal_tasks")
+                if tool_impl is None:
+                    raise RuntimeError("mcp_tool_not_found: goals.get_goal_tasks not available")
+                result = await tool_impl.ainvoke(
+                    {"args": {"goal_id": gid, "limit": int(limit), "jwt": jwt}},
+                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
+                )
+                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
+            except Exception as e:
+                raise RuntimeError(f"mcp:get_goal_tasks_failed: {e}")
+
+        adapted_goals_tools = [mcp_get_goals, mcp_get_goal_tasks]
+
         supervisor = create_supervisor(
             agents=[goals_agent],
-            tools=goals_tools,
+            tools=adapted_goals_tools,
             model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
             prompt=SUPERVISOR_PROMPT,
         )

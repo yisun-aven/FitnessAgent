@@ -144,11 +144,10 @@ struct HomeView: View {
 // MARK: - Coach Chat (Floating Panel)
 private struct CoachChatPanel: View {
     @EnvironmentObject private var api: APIClient
-    @State private var messages: [ChatMessage] = [
-        .init(role: "assistant", content: "Hi! I’m your fitness coach. How can I help today?")
-    ]
+    @State private var messages: [ChatMessage] = []
     @State private var input: String = ""
     @State private var isSending = false
+    @State private var isLoadingHistory = false
     @State private var errorText: String?
     var onClose: () -> Void
 
@@ -175,6 +174,9 @@ private struct CoachChatPanel: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
+                        if isLoadingHistory && messages.isEmpty {
+                            HStack { Spacer(); ProgressView().tint(AppTheme.accent); Spacer() }
+                        }
                         ForEach(messages) { msg in
                             HStack {
                                 if msg.role == "assistant" { Spacer(minLength: 0) }
@@ -190,8 +192,8 @@ private struct CoachChatPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                 }
-                .onChange(of: messages) { _ in
-                    if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                .onChange(of: messages) { _, newValue in
+                    if let last = newValue.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
                 }
             }
 
@@ -218,7 +220,29 @@ private struct CoachChatPanel: View {
         .frame(maxHeight: min(UIScreen.main.bounds.height * 0.6, 480))
         .glass(cornerRadius: 18)
         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+        .task { await loadHistory() }
         .alert("Error", isPresented: .constant(errorText != nil), actions: { Button("OK") { errorText = nil } }, message: { Text(errorText ?? "") })
+    }
+
+    private func loadHistory() async {
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
+        do {
+            let resp = try await api.fetchChatHistory(goalId: nil, limit: 200)
+            var ms: [ChatMessage] = resp.messages.compactMap { m in
+                let text = m.content?["text"] ?? m.content?["content"] ?? ""
+                return text.isEmpty ? nil : ChatMessage(role: m.role, content: text)
+            }
+            if ms.isEmpty {
+                ms = [.init(role: "assistant", content: "Hi! I’m your fitness coach. How can I help today?")]
+            }
+            messages = ms
+        } catch {
+            errorText = error.localizedDescription
+            if messages.isEmpty {
+                messages = [.init(role: "assistant", content: "Hi! I’m your fitness coach. How can I help today?")]
+            }
+        }
     }
 
     private func send() {

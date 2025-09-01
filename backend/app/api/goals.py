@@ -195,6 +195,42 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
 
     return {"goal": created, "agent_output": parsed_items}
 
+@router.delete("/{goal_id}", status_code=204)
+async def delete_goal(goal_id: str, user_obj = Depends(get_current_user), authorization: str | None = Header(default=None)) -> None:
+    """Delete a goal owned by the authenticated user via Supabase REST with RLS.
+    Returns 204 on success, 404 if not found or not owned by the authenticated user.
+    """
+    if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1]
+
+    url = f"{_SUPABASE_URL}/rest/v1/goals?id=eq.{goal_id}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.request("DELETE", url, headers=_sb_headers(token))
+
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+            # If representation is empty, no row was deleted (not found or not owned)
+            if not isinstance(data, list) or len(data) == 0:
+                raise HTTPException(status_code=404, detail="Goal not found or not owned by user")
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            # Treat 200 without parseable body as success
+            return
+    if resp.status_code == 204:
+        return
+
+    if resp.status_code in (401, 403):
+        raise HTTPException(status_code=resp.status_code, detail="Not authorized to delete this goal")
+
+    # For FK violations or other errors, propagate status/text
+    raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
 @router.get("/{goal_id}/tasks", response_model=List[Task])
 async def list_goal_tasks(goal_id: str, user_obj = Depends(get_current_user), authorization: str | None = Header(default=None)):
     """List tasks for a given goal, newest first."""
