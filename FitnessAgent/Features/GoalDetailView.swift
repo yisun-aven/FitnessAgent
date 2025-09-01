@@ -96,7 +96,7 @@ struct GoalDetailView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 16, weight: .black, design: .rounded))
                         .foregroundStyle(AppTheme.accent)
-                        .frame(width: 34, height: 34, alignment: .center)
+                        .frame(width: 32, height: 32, alignment: .center)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
