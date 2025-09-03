@@ -306,18 +306,20 @@ private struct GoalCard: View {
 
     private func title(for type: String) -> String {
         switch type.lowercased() {
-        case "weight_loss": return "Weight Loss"
-        case "muscle_gain": return "Muscle Gain"
-        case "endurance": return "Endurance"
+        case "fat_loss": return "Fat Loss"
+        case "build_muscle": return "Build Muscle"
+        case "healthy_lifestyle": return "Healthy Lifestyle"
+        case "sculpt_flow": return "Sculpt & Flow"
         default: return type.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 
     private func iconName(for type: String) -> String {
         switch type.lowercased() {
-        case "weight_loss": return "scalemass"
-        case "muscle_gain": return "dumbbell.fill"
-        case "endurance": return "figure.run"
+        case "fat_loss": return "scalemass"
+        case "build_muscle": return "dumbbell.fill"
+        case "healthy_lifestyle": return "leaf.fill"
+        case "sculpt_flow": return "figure.yoga"
         default: return "target"
         }
     }

@@ -58,6 +58,10 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
     user = _user_from_supabase(user_obj)
     if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
         # Fallback to in-memory if Supabase not configured
+        # Enforce: only one active goal per type per user
+        existing = [g for g in _IN_MEMORY_GOALS.get(user.id, []) if g.type == payload.type and g.status == "active"]
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Active goal of type '{payload.type}' already exists")
         g = Goal(
             id=str(uuid4()),
             user_id=user.id,
@@ -72,6 +76,23 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1]
+
+    # Supabase pre-check: only one active goal per type per user
+    check_url = f"{_SUPABASE_URL}/rest/v1/goals?select=id&user_id=eq.{user.id}&type=eq.{payload.type}&status=eq.active&limit=1"
+    async with httpx.AsyncClient(timeout=10) as client:
+        pre = await client.get(check_url, headers=_sb_headers(token))
+    if pre.status_code == 200:
+        try:
+            existing = pre.json()
+            if isinstance(existing, list) and len(existing) > 0:
+                raise HTTPException(status_code=409, detail=f"Active goal of type '{payload.type}' already exists")
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If parsing fails, continue to attempt creation; server-side RLS/constraints may still protect
+            print(f"[goals.create] precheck parse error: {e}")
+    else:
+        print(f"[goals.create] precheck error {pre.status_code}: {pre.text}")
 
     body = {
         "user_id": user.id,
