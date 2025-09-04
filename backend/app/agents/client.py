@@ -6,13 +6,23 @@ from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate
 from typing import Any, Dict, List, Iterable
 import asyncio 
 from dotenv import load_dotenv
 import os
 import httpx
-from app.agents.prompts import SQL_AGENT_PROMPT, GOALS_AGENT_PROMPT, SUPERVISOR_PROMPT
+from app.agents.prompts import (
+    SQL_AGENT_PROMPT,
+    GOALS_AGENT_PROMPT,
+    SUPERVISOR_PROMPT,
+    DIET_AGENT_PROMPT,
+    STRENGTH_AGENT_PROMPT,
+    CARDIO_AGENT_PROMPT,
+)
 import contextvars
+from pydantic import BaseModel
+from typing import List
 
 # Load environment variables from .env file
 load_dotenv()
@@ -160,6 +170,7 @@ class FitnessCoach:
         self.graph = None # This will hold the uncompiled graph for plotting 
 
     async def setup_agents(self):
+        # Retrieve MCP tools from the "goals" server (no explicit client start needed)
         goals_tools = await self.mcp_client.get_tools(server_name="goals")
         # Map tool name -> tool instance for direct invocation
         goals_tool_map = {
@@ -167,20 +178,45 @@ class FitnessCoach:
             for t in goals_tools
         }
         
-        # Create subagents
-        # sql_agent = create_react_agent(
-        #     model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
-        #     tools=sql_tools,
-        #     name="supabase_agent",
-        #     prompt=SQL_AGENT_PROMPT,
-        # )
+        # Structured output schemas for sub-agents
+        class TaskModel(BaseModel):
+            title: str
+            description: str
+            due_at: str
+            status: str
 
-        goals_agent = create_react_agent(
-            model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
-            tools=[],
-            name="goals_agent",
-            prompt=GOALS_AGENT_PROMPT,
-        )
+        class ItemsModel(BaseModel):
+            items: List[TaskModel]
+
+        # Domain agents (deterministic routing from goals_agent) with structured outputs
+        base = ChatOpenAI(model="gpt-4o", callbacks=[self.tracer])
+        diet_model = base.with_structured_output(ItemsModel)
+        strength_model = base.with_structured_output(ItemsModel)
+        cardio_model = base.with_structured_output(ItemsModel)
+
+        # Build simple prompt -> model chains (not ReAct agents) to avoid tool-call expectations
+        diet_prompt = ChatPromptTemplate.from_messages([
+            ("system", DIET_AGENT_PROMPT),
+            ("human", "CONTEXT:\n{context_json}")
+        ])
+        strength_prompt = ChatPromptTemplate.from_messages([
+            ("system", STRENGTH_AGENT_PROMPT),
+            ("human", "CONTEXT:\n{context_json}")
+        ])
+        cardio_prompt = ChatPromptTemplate.from_messages([
+            ("system", CARDIO_AGENT_PROMPT),
+            ("human", "CONTEXT:\n{context_json}")
+        ])
+
+        # Runnables: expect input dict with key 'context_json'
+        diet_agent = diet_prompt | diet_model
+        strength_agent = strength_prompt | strength_model
+        cardio_agent = cardio_prompt | cardio_model
+
+        # Expose domain agents on self for direct server-side calls
+        self.diet_agent = diet_agent
+        self.strength_agent = strength_agent
+        self.cardio_agent = cardio_agent
 
         # Expose MCP goals tools directly, but transparently inject JWT so RLS is enforced.
         # Define adapters explicitly (no loop) to avoid closure/capture pitfalls.
@@ -202,7 +238,7 @@ class FitnessCoach:
             except Exception as e:
                 # Surface the failure to the agent so it can retry/reauth
                 raise RuntimeError(f"mcp:get_goals_failed: {e}")
-        
+
         @tool("get_goal_tasks")
         async def mcp_get_goal_tasks(goal_id: str, limit: int = 50) -> dict:
             """Fetch tasks for a specific goal via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
@@ -224,6 +260,48 @@ class FitnessCoach:
             except Exception as e:
                 raise RuntimeError(f"mcp:get_goal_tasks_failed: {e}")
 
+        # Domain generators as callable tools OWNED BY goals_agent
+        # Each returns {"items": [...]} adhering to the JSON contract
+        @tool("diet_generate")
+        async def diet_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
+            """Generate diet/nutrition tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
+            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
+            import json as _json
+            res = await diet_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
+            # res is a Pydantic ItemsModel; normalize to dict
+            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
+            print(f"[client.diet_generate] items_count={len(out.get('items', []))}")
+            return out
+
+        @tool("strength_generate")
+        async def strength_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
+            """Generate strength/resistance training tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
+            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
+            import json as _json
+            res = await strength_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
+            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
+            print(f"[client.strength_generate] items_count={len(out.get('items', []))}")
+            return out
+
+        @tool("cardio_generate")
+        async def cardio_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
+            """Generate cardio tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
+            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
+            import json as _json
+            res = await cardio_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
+            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
+            print(f"[client.cardio_generate] items_count={len(out.get('items', []))}")
+            return out
+
+        # NOW create the goals coordinator agent with domain tools attached
+        goals_agent = create_react_agent(
+            model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
+            tools=[diet_generate, strength_generate, cardio_generate],
+            name="goals_agent",
+            prompt=GOALS_AGENT_PROMPT,
+        )
+
+        # Supervisor doesn't need domain tools; keep only MCP reads here
         adapted_goals_tools = [mcp_get_goals, mcp_get_goal_tasks]
 
         supervisor = create_supervisor(
@@ -241,5 +319,47 @@ class FitnessCoach:
             self.goals_agent = goals_agent.compile() if hasattr(goals_agent, "compile") else goals_agent
         except Exception:
             self.goals_agent = goals_agent
-        # Some implementations may not expose a `.graph` attribute
-        self.graph = getattr(supervisor, "graph", None)
+
+    async def generate_tasks_direct(self, user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
+        """Deterministically call domain sub-agents based on goal.type and merge outputs.
+
+        Returns a dict: {"items": [ ... ]}
+        """
+        payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
+
+        # Map goal types to which domain agents to call
+        goal_type = (goal.get("type") or "").lower()
+        agents_to_call = []
+        if goal_type in {"fat_loss"}:
+            agents_to_call = [self.diet_agent, self.cardio_agent]
+        elif goal_type in {"build_muscle"}:
+            agents_to_call = [self.strength_agent, self.diet_agent, self.cardio_agent]
+        elif goal_type in {"healthy_lifestyle"}:
+            agents_to_call = [self.diet_agent]
+        elif goal_type in {"sculpt_flow"}:
+            agents_to_call = [self.strength_agent, self.cardio_agent, self.diet_agent]
+        else:
+            # default: try all three
+            agents_to_call = [self.diet_agent, self.strength_agent, self.cardio_agent]
+
+        # Run calls sequentially to preserve tracing simplicity; switch to asyncio.gather if desired
+        merged: list[dict] = []
+        for ag in agents_to_call:
+            import json as _json
+            res = await ag.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
+            # res is ItemsModel due to structured output; normalize to dict
+            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
+            items = out.get("items", []) if isinstance(out, dict) else []
+            merged.extend(items)
+
+        # Optional: light dedupe by (title, due_at)
+        seen = set()
+        deduped = []
+        for it in merged:
+            key = (it.get("title"), it.get("due_at"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(it)
+
+        return {"items": deduped}
