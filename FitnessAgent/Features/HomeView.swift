@@ -264,13 +264,6 @@ private struct CoachChatPanel: View {
     }
 }
 
-// MARK: - Coach Chat
-private struct ChatMessage: Identifiable, Hashable {
-    let id = UUID()
-    let role: String // "user" or "assistant"
-    let content: String
-}
-
 // MARK: - Goal Card
 private struct GoalCard: View {
     let goal: Goal
