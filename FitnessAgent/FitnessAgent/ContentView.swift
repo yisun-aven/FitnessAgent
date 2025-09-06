@@ -8,13 +8,7 @@ struct ContentView: View {
     @State private var showProfile = false
 
     var body: some View {
-        NavigationStack {
-            mainContent
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { userMenu }
-        }
-        .sheet(isPresented: $showProfile) { profileSheet() }
+        mainContent
         .preferredColorScheme(.dark)
         // Recompute state whenever auth session changes (login/logout)
         .task(id: auth.session?.user.id) {
@@ -50,7 +44,9 @@ struct ContentView: View {
                 needsOnboarding = false
             }
         } else {
-            HomeView(onSignOut: signOut)
+            MainTabView(onSignOut: signOut)
+                .environmentObject(api)
+                .environmentObject(auth)
         }
     }
 
@@ -122,6 +118,33 @@ struct ContentView: View {
         }
     }
 }
+
+// MARK: - Main Tab View
+private struct MainTabView: View {
+    @EnvironmentObject private var api: APIClient
+    let onSignOut: () -> Void
+    var body: some View {
+        TabView {
+            HomeView(onSignOut: onSignOut)
+                .tabItem { Label("Home", systemImage: "house.fill") }
+
+            TasksTabView()
+                .environmentObject(api)
+                .tabItem { Label("Tasks", systemImage: "checklist") }
+
+            CoachChatScreen()
+                .environmentObject(api)
+                .tabItem { Label("Coach", systemImage: "message.fill") }
+
+            FriendsView()
+                .tabItem { Label("Friends", systemImage: "person.2.fill") }
+
+            ProfileRootView()
+                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
+        }
+    }
+}
+
 
 #Preview {
     ContentView()

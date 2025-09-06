@@ -4,11 +4,12 @@ struct GoalSelectionView: View {
     @EnvironmentObject private var api: APIClient
     @EnvironmentObject private var auth: AuthViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var goalType: String = "weight_loss"
+    @State private var goalType: String = "fat_loss"
     @State private var targetValueText: String = ""
     @State private var targetDate: Date = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
     @State private var isSubmitting = false
     @State private var errorText: String?
+    @State private var showDuplicateAlert = false
 
     var onContinue: () -> Void
 
@@ -22,9 +23,10 @@ struct GoalSelectionView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Goal Type").font(.subheadline).foregroundStyle(AppTheme.textSecondary)
                             Picker("Goal Type", selection: $goalType) {
-                                Text("Weight Loss").tag("weight_loss")
-                                Text("Muscle Gain").tag("muscle_gain")
-                                Text("Endurance").tag("endurance")
+                                Text("Fat Loss").tag("fat_loss")
+                                Text("Build Muscle").tag("build_muscle")
+                                Text("Healthy Lifestyle").tag("healthy_lifestyle")
+                                Text("Sculpt & Flow").tag("sculpt_flow")
                             }
                             .pickerStyle(.segmented)
                         }
@@ -78,6 +80,11 @@ struct GoalSelectionView: View {
                 .accessibilityLabel("Back")
             }
         }
+        .alert("Can't create another goal of this type", isPresented: $showDuplicateAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("You already have an active goal of this type. Please complete or delete it before creating a new one.")
+        }
     }
 
     private var header: some View {
@@ -112,7 +119,7 @@ struct GoalSelectionView: View {
         do {
             let dateStr = ISO8601DateFormatter().string(from: targetDate)
             let tv = Double(targetValueText)
-            let goal = try await api.createGoal(.init(type: goalType, target_value: tv, target_date: String(dateStr.prefix(10))))
+            _ = try await api.createGoal(.init(type: goalType, target_value: tv, target_date: String(dateStr.prefix(10))))
 
             // Navigate immediately after goal creation succeeds
             onContinue()
@@ -126,6 +133,9 @@ struct GoalSelectionView: View {
             if nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
                 onContinue()
                 dismiss()
+            } else if nsErr.domain == "API" && nsErr.code == 409 {
+                // Duplicate goal type
+                showDuplicateAlert = true
             } else {
                 errorText = error.localizedDescription
             }

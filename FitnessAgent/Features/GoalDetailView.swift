@@ -301,13 +301,6 @@ private struct GoalCoachChatPanel: View {
     }
 }
 
-// Shared with HomeView panel
-private struct ChatMessage: Identifiable, Hashable {
-    let id = UUID()
-    let role: String // "user" or "assistant"
-    let content: String
-}
-
 #Preview {
     NavigationStack {
         GoalDetailView(goal: Goal(

@@ -58,6 +58,10 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
     user = _user_from_supabase(user_obj)
     if not _SUPABASE_URL or not _SUPABASE_ANON_KEY:
         # Fallback to in-memory if Supabase not configured
+        # Enforce: only one active goal per type per user
+        existing = [g for g in _IN_MEMORY_GOALS.get(user.id, []) if g.type == payload.type and g.status == "active"]
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Active goal of type '{payload.type}' already exists")
         g = Goal(
             id=str(uuid4()),
             user_id=user.id,
@@ -72,6 +76,23 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1]
+
+    # Supabase pre-check: only one active goal per type per user
+    check_url = f"{_SUPABASE_URL}/rest/v1/goals?select=id&user_id=eq.{user.id}&type=eq.{payload.type}&status=eq.active&limit=1"
+    async with httpx.AsyncClient(timeout=10) as client:
+        pre = await client.get(check_url, headers=_sb_headers(token))
+    if pre.status_code == 200:
+        try:
+            existing = pre.json()
+            if isinstance(existing, list) and len(existing) > 0:
+                raise HTTPException(status_code=409, detail=f"Active goal of type '{payload.type}' already exists")
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If parsing fails, continue to attempt creation; server-side RLS/constraints may still protect
+            print(f"[goals.create] precheck parse error: {e}")
+    else:
+        print(f"[goals.create] precheck error {pre.status_code}: {pre.text}")
 
     body = {
         "user_id": user.id,
@@ -104,62 +125,23 @@ async def create_goal(payload: GoalCreate, user_obj = Depends(get_current_user),
     goal_agent = getattr(coach_impl, "goals_agent", None)
     tracer = getattr(coach_impl, "tracer", None)
 
-    sys_ctx = {
-        "user_profile": user_profile,
-        "goal": created,
-    }
-    messages = [
-        SystemMessage(content="Context: " + json.dumps(sys_ctx, default=str)),
-    ]
-    agent_output = None
+    # Prefer direct deterministic generation via domain sub-agents (use initialized coach_impl)
+    parsed_items: list[dict] = []
     try:
-        if goal_agent is None:
-            raise RuntimeError("goals_agent not initialized")
-        callbacks = [tracer] if tracer is not None else []
-        agent_output = await goal_agent.ainvoke({"messages": messages}, config={"callbacks": callbacks})
-        # print(f"[goals.create] goals agent completed generation for goal={created.get('id')}")
-        # print(f"[goals.create] goals agent response: {agent_output}")
+        direct = await coach_impl.generate_tasks_direct(
+            user_profile=user_profile,
+            goal=created,
+            #existing_tasks_summary=existing_tasks_summary,
+        )
+        parsed_items = direct.get("items", []) if isinstance(direct, dict) else []
+        print(f"[goals.create] direct_merge items_count={len(parsed_items)}")
     except Exception as e:
-        print(f"[goals.create] goals agent generation failed for goal={created.get('id')}: {e}")
+        print(f"[goals.create] direct_generation_error: {e}")
 
-    # Extract the AI JSON content (best-effort) from LangChain message objects
-    parsed_items = None
-    try:
-        if isinstance(agent_output, dict):
-            msgs = agent_output.get("messages", [])
-            last_ai_content: str | None = None
-            # Iterate from the end to find the last AI message
-            for msg in reversed(msgs):
-                content_val = None
-                if isinstance(msg, AIMessage):
-                    content_val = msg.content
-                elif hasattr(msg, "content") and getattr(msg, "type", None) == "ai":
-                    content_val = getattr(msg, "content", None)
-                elif isinstance(msg, dict):
-                    if msg.get("type") == "ai" or msg.get("name") == "goals_agent":
-                        content_val = msg.get("content")
-                # Accept first match from the end
-                if content_val is not None:
-                    # Ensure string
-                    if not isinstance(content_val, str):
-                        try:
-                            content_val = str(content_val)
-                        except Exception:
-                            content_val = ""
-                    last_ai_content = content_val
-                    break
-
-            if last_ai_content:
-                # content may include a ```json ... ``` block, so strip fences
-                import re, json as _json
-                m = re.search(r"```json\s*(.*?)\s*```", last_ai_content, re.DOTALL) or re.search(r"```\s*(.*?)\s*```", last_ai_content, re.DOTALL)
-                json_text = (m.group(1) if m else last_ai_content).strip()
-                data = _json.loads(json_text)
-                parsed_items = data.get("items", data)
-    except Exception as e:
-        print(f"[goals.create] failed to parse agent_output JSON: {e}")
-
-    print(f"[goals.create] parsed_items: {parsed_items}")
+    # No fallback: direct deterministic domain generation only
+    print(f"[goals.create] items_count={len(parsed_items)}")
+    if not parsed_items:
+        raise HTTPException(status_code=400, detail="Agent returned no tasks to create.")
 
     # Persist parsed tasks to Supabase (best-effort)
     if parsed_items and isinstance(parsed_items, (list, tuple)) and _SUPABASE_URL and _SUPABASE_ANON_KEY:
