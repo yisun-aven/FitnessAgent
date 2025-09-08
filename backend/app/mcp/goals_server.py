@@ -140,8 +140,8 @@ def get_goal_tasks(ctx: Context, args: GetGoalTasksArgs) -> Dict[str, Any]:
         raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate")
 
     url = (
-        f"{SUPABASE_URL}/rest/v1/tasks?select=*&goal_id=eq.{args.goal_id}"
-        f"&order=due_at.asc&limit={int(args.limit)}"
+        f"{SUPABASE_URL}/rest/v1/tasks?select=*\u0026goal_id=eq.{args.goal_id}"
+        f"\u0026order=due_at.asc\u0026limit={int(args.limit)}"
     )
     try:
         with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:

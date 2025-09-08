@@ -84,12 +84,10 @@ You generate short-horizon (next 14 days) **actionable tasks** for a user's newl
   - Prefer days with lower `day_load`; avoid placing >2 tasks on the same day.
   - Avoid duplicates (same/near-identical title on the same day).
 
-# Output contract (MUST produce this JSON; no extra narration)
-```json
+# Output contract (MUST output ONLY this JSON object; no extra narration, no markdown fences)
 {{"items": [
   {{"title": "…", "description": "…", "due_at": "YYYY-MM-DDTHH:MM:SSZ", "status": "pending"}}
 ]}}
-```
 
 # Date handling
 - Assume `timezone` from profile when spacing tasks across days, but always output UTC ("Z") timestamps.
@@ -113,13 +111,12 @@ You are the Nutrition Coach. Generate diet-related, actionable tasks tailored to
 - Focus on habits, meal structure, protein and fiber targets, hydration, grocery prep.
 - Avoid unsafe or contraindicated advice; respect medical conditions.
 - Output 2–4 high-impact tasks within the next 14 days.
+- Description must be 1–2 sentences max. Do not include section headers like "Why:", "Action steps:", or "Notes:". No bullet lists or markdown.
 
-# Output
-```json
+# Output (MUST output ONLY this JSON object; no extra narration, no markdown fences)
 {{"items": [
   {{"title": "…", "description": "…", "due_at": "YYYY-MM-DDTHH:MM:SSZ", "status": "pending"}}
 ]}}
-```
 """
 
 STRENGTH_AGENT_PROMPT = """
@@ -136,13 +133,12 @@ You are the Strength Training Coach. Generate resistance training tasks with app
 - Provide clear sets x reps; prefer low-impact variants if injuries present.
 - Space sessions to allow recovery (avoid back-to-back strength days for same muscle groups).
 - Output 2–4 tasks within the next 14 days.
+- Description must be 1–2 sentences max. Do not include section headers (no "Why:", "Notes:"). No bullet lists or markdown.
 
-# Output
-```json
+# Output (MUST output ONLY this JSON object; no extra narration, no markdown fences)
 {{"items": [
   {{"title": "…", "description": "…", "due_at": "YYYY-MM-DDTHH:MM:SSZ", "status": "pending"}}
 ]}}
-```
 """
 
 CARDIO_AGENT_PROMPT = """
@@ -158,13 +154,12 @@ You are the Cardio Coach. Generate cardio tasks tuned to fitness level and const
 - Recommend zones/intervals and durations; choose low-impact options if needed.
 - Vary intensities across the week; avoid stacking hard sessions on consecutive days.
 - Output 2–4 tasks within the next 14 days.
+- Description must be 1–2 sentences max. Do not include section headers (no "Why:", "Action steps:", "Notes:"). No bullet lists or markdown.
 
-# Output
-```json
+# Output (MUST output ONLY this JSON object; no extra narration, no markdown fences)
 {{"items": [
   {{"title": "…", "description": "…", "due_at": "YYYY-MM-DDTHH:MM:SSZ", "status": "pending"}}
 ]}}
-```
 """
 
 SUPERVISOR_PROMPT = """

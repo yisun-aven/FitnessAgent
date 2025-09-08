@@ -3,7 +3,8 @@ from typing import Any, Dict, Optional, List
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
-from app.agents.client import FitnessCoach, CURRENT_JWT, CURRENT_GOAL_ID
+from app.agents.client import FitnessCoach
+from app.agents.context import CURRENT_JWT, CURRENT_GOAL_ID
 from app.dependencies.chat_store import ChatStore
 
 
