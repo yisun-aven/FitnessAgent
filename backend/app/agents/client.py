@@ -1,28 +1,26 @@
-from re import S
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent, ToolNode
+from langgraph.prebuilt import create_react_agent
 from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
-from typing import Any, Dict, List, Iterable
-import asyncio 
+from typing import Any, Dict, List
 from dotenv import load_dotenv
 import os
-import httpx
 from app.agents.prompts import (
-    SQL_AGENT_PROMPT,
     GOALS_AGENT_PROMPT,
     SUPERVISOR_PROMPT,
     DIET_AGENT_PROMPT,
     STRENGTH_AGENT_PROMPT,
     CARDIO_AGENT_PROMPT,
 )
-import contextvars
-from pydantic import BaseModel
-from typing import List
+from app.agents.context import CURRENT_JWT, CURRENT_GOAL_ID
+from app.tools.goals_mcp import make_goals_mcp_tools
+from app.tools.generators import make_generators
+from app.tools.search_tavily import get_tavily_tool
+from app.agents.utils.tracing import TracingCallbackHandler
+from app.agents.schemas import ItemsModel
 
 # Load environment variables from .env file
 load_dotenv()
@@ -34,109 +32,9 @@ SUPABASE_PROJECT_ID = os.getenv("SUPABASE_PROJECT_ID")  # optional but recommend
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
-CURRENT_JWT: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_jwt", default=None)
-CURRENT_GOAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_goal_id", default=None)
-
-class TracingCallbackHandler(BaseCallbackHandler):
-    """Lightweight tracer that prints key steps and captures them in-memory.
-
-    This logs chain/LLM/tool starts and ends with condensed inputs/outputs so you can
-    observe routing decisions (e.g., when the SQL agent/tool is invoked) and payloads.
-    """
-
-    def __init__(self) -> None:
-        self.events: List[Dict[str, Any]] = []
-
-    def _truncate(self, s: Any, limit: int = 400) -> str:
-        try:
-            text = s if isinstance(s, str) else repr(s)
-        except Exception:
-            text = str(s)
-        if len(text) > limit:
-            return text[:limit] + "…"
-        return text
-
-    def _label_from_serialized(self, serialized: Any) -> str:
-        # LangChain may pass dict, list path segments, or None
-        if serialized is None:
-            return "None"
-        if isinstance(serialized, dict):
-            for k in ("id", "name", "lc_serializable"):
-                v = serialized.get(k)
-                if v:
-                    return self._truncate(v, 120)
-            return self._truncate(serialized, 120)
-        if isinstance(serialized, (list, tuple)):
-            try:
-                return ".".join(str(x) for x in serialized)
-            except Exception:
-                return self._truncate(serialized, 120)
-        return self._truncate(serialized, 120)
-
-    def _log(self, kind: str, payload: Dict[str, Any]) -> None:
-        entry = {"type": kind, **payload}
-        self.events.append(entry)
-        # Print concise line to server console for quick inspection
-        label = payload.get("name") or payload.get("tool") or payload.get("lc_serializable")
-        print(f"[TRACE] {kind}: {label}")
-        # For verbose debugging, uncomment:
-        # print(json.dumps(entry, indent=2, default=str))
-
-    # Chains / graphs
-    def on_chain_start(self, serialized, inputs, **kwargs):
-        name = self._label_from_serialized(serialized)
-        # inputs can be dict, list/tuple, or other
-        if isinstance(inputs, dict):
-            safe_inputs = {k: self._truncate(v) for k, v in inputs.items()}
-        elif isinstance(inputs, (list, tuple)):
-            safe_inputs = {str(i): self._truncate(v) for i, v in enumerate(inputs)}
-        else:
-            safe_inputs = {"value": self._truncate(inputs)}
-        self._log("chain_start", {"name": name, "inputs": safe_inputs})
-
-    def on_chain_end(self, outputs, **kwargs):
-        safe_outputs = outputs
-        try:
-            if isinstance(outputs, dict):
-                safe_outputs = {k: self._truncate(v) for k, v in outputs.items()}
-        except Exception:
-            safe_outputs = self._truncate(outputs)
-        self._log("chain_end", {"outputs": safe_outputs})
-
-    # LLM calls
-    def on_llm_start(self, serialized, prompts, **kwargs):
-        name = self._label_from_serialized(serialized)
-        safe_prompts = [self._truncate(p) for p in (prompts or [])]
-        self._log("llm_start", {"name": name, "prompts": safe_prompts})
-
-    def on_llm_end(self, response, **kwargs):
-        # Extract text generations concisely
-        texts: List[str] = []
-        try:
-            gens = getattr(response, "generations", []) or []
-            for gen_list in gens:
-                for gen in gen_list:
-                    # LangChain message/text differences
-                    txt = getattr(getattr(gen, "message", None), "content", None) or getattr(gen, "text", None)
-                    if txt:
-                        texts.append(self._truncate(txt))
-        except Exception as e:
-            texts.append(f"<parse_error {e}>")
-        self._log("llm_end", {"response": texts})
-
-    # Tools (e.g., MCP Supabase tools)
-    def on_tool_start(self, serialized, input_str, **kwargs):
-        name = None
-        try:
-            name = serialized.get("name") if isinstance(serialized, dict) else self._label_from_serialized(serialized)
-        except Exception:
-            name = self._label_from_serialized(serialized)
-        self._log("tool_start", {"tool": name, "input": self._truncate(input_str)})
-
-    def on_tool_end(self, output, **kwargs):
-        self._log("tool_end", {"output": self._truncate(output)})
-
+## context variables are imported from app.agents.context
 class FitnessCoach:
     def __init__(self):
         # Initialize MCP client to run your servers locally
@@ -155,13 +53,18 @@ class FitnessCoach:
             },
             "goals": {
                 "command": "python",
-                "args": ["-m", "app.agents.server"],  # path/module to your server file
+                "args": ["-m", "app.mcp.goals_server"],  # moved to app/mcp/goals_server.py
                 "env": {
                     "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
                     "SUPABASE_ANON_KEY": os.getenv("SUPABASE_ANON_KEY", ""),
                 },
                 "transport": "stdio",
             },
+            # "tavily": {
+            #     # Use Tavily's hosted MCP via SSE transport
+            #     "transport": "sse",
+            #     "url": f"https://mcp.tavily.com/mcp/?tavilyApiKey={TAVILY_API_KEY}",
+            # },
         })
         # Shared tracer across the whole graph so we can see cross-agent flow
         self.tracer = TracingCallbackHandler()
@@ -172,29 +75,57 @@ class FitnessCoach:
     async def setup_agents(self):
         # Retrieve MCP tools from the "goals" server (no explicit client start needed)
         goals_tools = await self.mcp_client.get_tools(server_name="goals")
+        # Tavily is wired via LangChain tool (not MCP) for reliability
+        tavily_tool = get_tavily_tool(max_results=5)
         # Map tool name -> tool instance for direct invocation
         goals_tool_map = {
             (getattr(t, "name", None) or getattr(t, "lc_name", None) or ""): t
             for t in goals_tools
         }
+        # MCP Goals server tool wrappers (injects JWT/goal_id)
+        mcp_get_goals, mcp_get_goal_tasks = make_goals_mcp_tools(goals_tool_map)
         
-        # Structured output schemas for sub-agents
-        class TaskModel(BaseModel):
-            title: str
-            description: str
-            due_at: str
-            status: str
+        # Domain sub-agents as ReAct agents (no tools initially). You can add per-agent tools later.
+        diet_agent = create_react_agent(
+            model=ChatOpenAI(model="gpt-5-mini", temperature=0, callbacks=[self.tracer]),
+            tools=[],
+            name="diet_agent",
+            prompt=DIET_AGENT_PROMPT,
+        )
+        strength_agent = create_react_agent(
+            model=ChatOpenAI(model="gpt-5-mini", temperature=0, callbacks=[self.tracer]),
+            tools=[],
+            name="strength_agent",
+            prompt=STRENGTH_AGENT_PROMPT,
+        )
+        cardio_agent = create_react_agent(
+            model=ChatOpenAI(model="gpt-5-mini", temperature=0, callbacks=[self.tracer]),
+            tools=[],
+            name="cardio_agent",
+            prompt=CARDIO_AGENT_PROMPT,
+        )
 
-        class ItemsModel(BaseModel):
-            items: List[TaskModel]
+        # Expose domain agents on self for direct server-side calls
+        try:
+            self.diet_agent = diet_agent.compile() if hasattr(diet_agent, "compile") else diet_agent
+        except Exception:
+            self.diet_agent = diet_agent
+        try:
+            self.strength_agent = strength_agent.compile() if hasattr(strength_agent, "compile") else strength_agent
+        except Exception:
+            self.strength_agent = strength_agent
+        try:
+            self.cardio_agent = cardio_agent.compile() if hasattr(cardio_agent, "compile") else cardio_agent
+        except Exception:
+            self.cardio_agent = cardio_agent
 
-        # Domain agents (deterministic routing from goals_agent) with structured outputs
-        base = ChatOpenAI(model="gpt-4o", callbacks=[self.tracer])
-        diet_model = base.with_structured_output(ItemsModel)
-        strength_model = base.with_structured_output(ItemsModel)
-        cardio_model = base.with_structured_output(ItemsModel)
+        # Parallel structured-output runnables for deterministic server path
+        # Use a small, reliable model for structured outputs
+        base_struct = ChatOpenAI(model="gpt-4o-mini", temperature=0, callbacks=[self.tracer])
+        diet_model = base_struct.with_structured_output(ItemsModel)
+        strength_model = base_struct.with_structured_output(ItemsModel)
+        cardio_model = base_struct.with_structured_output(ItemsModel)
 
-        # Build simple prompt -> model chains (not ReAct agents) to avoid tool-call expectations
         diet_prompt = ChatPromptTemplate.from_messages([
             ("system", DIET_AGENT_PROMPT),
             ("human", "CONTEXT:\n{context_json}")
@@ -208,101 +139,28 @@ class FitnessCoach:
             ("human", "CONTEXT:\n{context_json}")
         ])
 
-        # Runnables: expect input dict with key 'context_json'
-        diet_agent = diet_prompt | diet_model
-        strength_agent = strength_prompt | strength_model
-        cardio_agent = cardio_prompt | cardio_model
+        self.diet_struct = diet_prompt | diet_model
+        self.strength_struct = strength_prompt | strength_model
+        self.cardio_struct = cardio_prompt | cardio_model
 
-        # Expose domain agents on self for direct server-side calls
-        self.diet_agent = diet_agent
-        self.strength_agent = strength_agent
-        self.cardio_agent = cardio_agent
+        # Expose MCP goals tools via factory wrappers
+        # mcp_get_goals, mcp_get_goal_tasks are now LangChain tools
 
-        # Expose MCP goals tools directly, but transparently inject JWT so RLS is enforced.
-        # Define adapters explicitly (no loop) to avoid closure/capture pitfalls.
-        @tool("get_goals")
-        async def mcp_get_goals(limit: int = 20) -> dict:
-            """Fetch the current user's goals via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
-            jwt = CURRENT_JWT.get()
-            if not jwt:
-                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate(client)")
-            try:
-                tool_impl = goals_tool_map.get("get_goals")
-                if tool_impl is None:
-                    raise RuntimeError("mcp_tool_not_found: goals.get_goals not available")
-                result = await tool_impl.ainvoke(
-                    {"args": {"limit": int(limit), "jwt": jwt}},
-                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
-                )
-                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
-            except Exception as e:
-                # Surface the failure to the agent so it can retry/reauth
-                raise RuntimeError(f"mcp:get_goals_failed: {e}")
-
-        @tool("get_goal_tasks")
-        async def mcp_get_goal_tasks(goal_id: str, limit: int = 50) -> dict:
-            """Fetch tasks for a specific goal via MCP (RLS enforced). Returns {items, count, next_cursor, as_of, truncated}."""
-            jwt = CURRENT_JWT.get()
-            gid = goal_id or CURRENT_GOAL_ID.get()
-            if not jwt:
-                raise PermissionError("jwt_missing: user JWT is required for RLS; please reauthenticate")
-            if not gid:
-                raise ValueError("goal_id_missing: a goal_id must be provided or set in context")
-            try:
-                tool_impl = goals_tool_map.get("get_goal_tasks")
-                if tool_impl is None:
-                    raise RuntimeError("mcp_tool_not_found: goals.get_goal_tasks not available")
-                result = await tool_impl.ainvoke(
-                    {"args": {"goal_id": gid, "limit": int(limit), "jwt": jwt}},
-                    config={"metadata": {"Authorization": f"Bearer {jwt}"}},
-                )
-                return result if isinstance(result, dict) else {"items": result or [], "count": len(result or []), "next_cursor": None, "as_of": None, "truncated": False}
-            except Exception as e:
-                raise RuntimeError(f"mcp:get_goal_tasks_failed: {e}")
-
-        # Domain generators as callable tools OWNED BY goals_agent
-        # Each returns {"items": [...]} adhering to the JSON contract
-        @tool("diet_generate")
-        async def diet_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
-            """Generate diet/nutrition tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
-            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
-            import json as _json
-            res = await diet_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
-            # res is a Pydantic ItemsModel; normalize to dict
-            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
-            print(f"[client.diet_generate] items_count={len(out.get('items', []))}")
-            return out
-
-        @tool("strength_generate")
-        async def strength_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
-            """Generate strength/resistance training tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
-            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
-            import json as _json
-            res = await strength_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
-            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
-            print(f"[client.strength_generate] items_count={len(out.get('items', []))}")
-            return out
-
-        @tool("cardio_generate")
-        async def cardio_generate(user_profile: dict, goal: dict, existing_tasks_summary: dict | None = None) -> dict:
-            """Generate cardio tasks. Inputs: user_profile, goal, existing_tasks_summary? -> {items}. Returns a JSON dict with key 'items'."""
-            payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
-            import json as _json
-            res = await cardio_agent.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
-            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
-            print(f"[client.cardio_generate] items_count={len(out.get('items', []))}")
-            return out
+        # Domain generators via factory; each returns a tool producing {"items": [...]}
+        diet_generate, strength_generate, cardio_generate = make_generators(
+            diet_agent, strength_agent, cardio_agent, self.tracer
+        )
 
         # NOW create the goals coordinator agent with domain tools attached
         goals_agent = create_react_agent(
-            model=ChatOpenAI(model="gpt-4o", callbacks=[self.tracer]),
+            model=ChatOpenAI(model="gpt-5-mini", temperature=0, callbacks=[self.tracer]),
             tools=[diet_generate, strength_generate, cardio_generate],
             name="goals_agent",
             prompt=GOALS_AGENT_PROMPT,
         )
 
         # Supervisor doesn't need domain tools; keep only MCP reads here
-        adapted_goals_tools = [mcp_get_goals, mcp_get_goal_tasks]
+        adapted_goals_tools = [mcp_get_goals, mcp_get_goal_tasks, tavily_tool]
 
         supervisor = create_supervisor(
             agents=[goals_agent],
@@ -327,30 +185,108 @@ class FitnessCoach:
         """
         payload = {"user_profile": user_profile, "goal": goal, "existing_tasks_summary": existing_tasks_summary or None}
 
-        # Map goal types to which domain agents to call
+        # Map goal types to which domain sub-agents to call (primary) with structured fallback
         goal_type = (goal.get("type") or "").lower()
         agents_to_call = []
+        fallback_struct = []
         if goal_type in {"fat_loss"}:
             agents_to_call = [self.diet_agent, self.cardio_agent]
+            # fallback_struct = [self.diet_struct, self.cardio_struct]
         elif goal_type in {"build_muscle"}:
             agents_to_call = [self.strength_agent, self.diet_agent, self.cardio_agent]
+            # fallback_struct = [self.strength_struct, self.diet_struct, self.cardio_struct]
         elif goal_type in {"healthy_lifestyle"}:
             agents_to_call = [self.diet_agent]
+            # fallback_struct = [self.diet_struct]
         elif goal_type in {"sculpt_flow"}:
             agents_to_call = [self.strength_agent, self.cardio_agent, self.diet_agent]
+            # fallback_struct = [self.strength_struct, self.cardio_struct, self.diet_struct]
         else:
             # default: try all three
             agents_to_call = [self.diet_agent, self.strength_agent, self.cardio_agent]
+            # fallback_struct = [self.diet_struct, self.strength_struct, self.cardio_struct]
 
-        # Run calls sequentially to preserve tracing simplicity; switch to asyncio.gather if desired
+        # Run calls in parallel for speed
         merged: list[dict] = []
-        for ag in agents_to_call:
-            import json as _json
-            res = await ag.ainvoke({"context_json": _json.dumps(payload, default=str)}, config={"callbacks": [self.tracer]})
-            # res is ItemsModel due to structured output; normalize to dict
-            out = res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else res)
+        import json as _json
+        import re as _re
+        import asyncio as _asyncio
+        def _extract_json_dict(text: str) -> Dict[str, Any]:
+            s = text.strip()
+            # direct parse
+            try:
+                obj = _json.loads(s)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+            # fenced
+            fence = _re.search(r"```json\s*(\{[\s\S]*?\})\s*```", s) or _re.search(r"```\s*(\{[\s\S]*?\})\s*```", s)
+            if fence:
+                try:
+                    obj = _json.loads(fence.group(1))
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass
+            # braces slice
+            if "{" in s and "}" in s:
+                try:
+                    start = s.find("{")
+                    end = s.rfind("}") + 1
+                    obj = _json.loads(s[start:end])
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass
+            return {"items": []}
+        def _norm(res: Any) -> Dict[str, Any]:
+            if isinstance(res, dict):
+                # LangGraph compiled agents often return {"messages": [...]}
+                msgs = res.get("messages") if isinstance(res, dict) else None
+                if isinstance(msgs, list) and msgs:
+                    # find last AI-like message
+                    from langchain_core.messages import AIMessage as _AI
+                    last_ai = next((m for m in reversed(msgs) if isinstance(m, _AI)), None)
+                    if last_ai and isinstance(getattr(last_ai, "content", None), str):
+                        return _extract_json_dict(last_ai.content)  # type: ignore[attr-defined]
+                return res
+            if hasattr(res, "model_dump"):
+                try:
+                    return res.model_dump()  # type: ignore
+                except Exception:
+                    pass
+            if isinstance(res, AIMessage):
+                content = getattr(res, "content", None)
+                if isinstance(content, str):
+                    return _extract_json_dict(content)
+                return {"items": []}
+            if isinstance(res, str):
+                return _extract_json_dict(res)
+            return {"items": []}
+
+        async def _call_agent(idx: int, ag):
+            ctx = _json.dumps(payload, default=str)
+            ag_name = getattr(ag, 'name', None) or getattr(getattr(ag, 'config', None), 'name', None) or f"agent_{idx}"
+            print(f"[DEBUG] direct_generate calling subagent={ag_name} goal_type={goal_type}")
+            try:
+                res = await ag.ainvoke({"messages": [HumanMessage(content=f"CONTEXT:\n{ctx}")]}, config={"callbacks": [self.tracer]})
+            except Exception:
+                res = await ag.ainvoke({"context_json": ctx}, config={"callbacks": [self.tracer]})
+            out = _norm(res)
             items = out.get("items", []) if isinstance(out, dict) else []
-            merged.extend(items)
+            count = len(items) if isinstance(items, list) else 0
+            if count == 0:
+                raw = getattr(res, "content", None) if isinstance(res, AIMessage) else (res if isinstance(res, str) else None)
+                snippet = (raw[:300] + "…") if isinstance(raw, str) and len(raw) > 300 else (raw or "<non-text>")
+                print(f"[DEBUG] subagent={ag_name} returned 0 items; raw= {snippet}")
+            else:
+                print(f"[DEBUG] subagent={ag_name} produced {count} items")
+            return items
+
+        results = await _asyncio.gather(*(_call_agent(i, ag) for i, ag in enumerate(agents_to_call)))
+        for items in results:
+            merged.extend(items or [])
 
         # Optional: light dedupe by (title, due_at)
         seen = set()

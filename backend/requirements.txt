@@ -18,6 +18,7 @@ langgraph-supervisor
 langgraph==0.5.3
 langgraph-prebuilt==0.5.2
 supabase>=2.6,<3
+langchain-tavily>=0.1.0
 
 # add
 openai>=1.99.9,<2.0.0
