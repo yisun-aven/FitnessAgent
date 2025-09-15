@@ -123,24 +123,31 @@ struct ContentView: View {
 private struct MainTabView: View {
     @EnvironmentObject private var api: APIClient
     let onSignOut: () -> Void
+    @State private var selection: Int = 0
     var body: some View {
-        TabView {
-            HomeView(onSignOut: onSignOut)
-                .tabItem { Label("Home", systemImage: "house.fill") }
-
+        TabView(selection: $selection) {
+            Home()
+                .tag(0)
+            
             TasksTabView()
                 .environmentObject(api)
-                .tabItem { Label("Tasks", systemImage: "checklist") }
-
+                .tag(1)
+            
             CoachChatScreen()
                 .environmentObject(api)
-                .tabItem { Label("Coach", systemImage: "message.fill") }
-
+                .tag(2)
+            
             FriendsView()
-                .tabItem { Label("Friends", systemImage: "person.2.fill") }
-
+                .tag(3)
+            
             ProfileRootView()
-                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
+                .tag(4)
+        }
+        // Hide the system tab bar; show our custom one floating as an overlay
+        .toolbar(.hidden, for: .tabBar)
+        .overlay(alignment: .bottom) {
+            CustomTabBar(selection: $selection)
+                .padding(.bottom, 8)
         }
     }
 }

@@ -98,7 +98,9 @@ def get_goals(ctx: Context, args: GetGoalsArgs) -> Dict[str, Any]:
     try:
         with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
             resp = client.get(url, headers=_sb_headers(jwt))
-        if resp.status_code != 200:
+        # PostgREST can return 206 Partial Content when a range/limit is applied.
+        # Treat 200 OK and 206 Partial Content as successful responses.
+        if resp.status_code not in (200, 206):
             logger.warning("Supabase REST error: %s %s", resp.status_code, resp.text[:200])
             raise RuntimeError(f"rest_error:{resp.status_code}: {resp.text[:200]}")
         data = resp.json() or []
@@ -146,7 +148,8 @@ def get_goal_tasks(ctx: Context, args: GetGoalTasksArgs) -> Dict[str, Any]:
     try:
         with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=20.0)) as client:
             resp = client.get(url, headers=_sb_headers(jwt))
-        if resp.status_code != 200:
+        # Accept 206 Partial Content for ranged responses
+        if resp.status_code not in (200, 206):
             logger.warning("Supabase REST error: %s %s", resp.status_code, resp.text[:200])
             raise RuntimeError(f"rest_error:{resp.status_code}: {resp.text[:200]}")
         data = resp.json() or []
